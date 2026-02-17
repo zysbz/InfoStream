@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://infostream.local/schemas/item.schema.json",
+  "title": "InfoStream Item",
+  "type": "object",
+  "required": [
+    "id",
+    "version",
+    "source",
+    "source_url",
+    "title",
+    "fetched_at",
+    "content_type",
+    "text",
+    "tags",
+    "evidence",
+    "raw_refs"
+  ],
+  "properties": {
+    "id": { "type": "string" },
+    "version": { "type": "string" },
+    "source": { "type": "string" },
+    "source_url": { "type": "string" },
+    "title": { "type": "string" },
+    "published_at": { "type": ["string", "null"], "format": "date-time" },
+    "fetched_at": { "type": "string", "format": "date-time" },
+    "content_type": {
+      "type": "string",
+      "enum": ["repo", "article", "paper", "video", "post", "other"]
+    },
+    "text": { "type": "string" },
+    "tags": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "evidence": {
+      "type": "object",
+      "required": ["source_url", "fetched_at", "content_hash", "raw_hash"],
+      "properties": {
+        "source_url": { "type": "string" },
+        "fetched_at": { "type": "string", "format": "date-time" },
+        "content_hash": { "type": "string" },
+        "raw_hash": { "type": "string" },
+        "request_context": { "type": "object" },
+        "extract_hints": { "type": "object" }
+      },
+      "additionalProperties": true
+    },
+    "raw_refs": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  },
+  "additionalProperties": true
+}

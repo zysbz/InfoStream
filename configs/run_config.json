@@ -1,0 +1,8 @@
+﻿{
+  "max_items": 50,
+  "prompt_template": "Summarize each item in concise Chinese with key insights.",
+  "focus_tags": [],
+  "keywords": ["llm", "rag", "agent", "inference", "serving"],
+  "priority_strategy": "github_hot_then_paper_blog_video",
+  "language": "zh-CN"
+}

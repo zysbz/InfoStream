@@ -1,0 +1,58 @@
+sources:
+  - name: github_trending_daily
+    type: github_trending
+    enabled: true
+    entry_urls:
+      - https://github.com/trending
+    discover_depth: 1
+    since: null
+    timeout_sec: 180
+    params: {}
+
+  - name: github_search_ai
+    type: github_search
+    enabled: true
+    entry_urls:
+      - https://api.github.com/search/repositories
+    discover_depth: 1
+    since: null
+    timeout_sec: 180
+    params:
+      per_keyword: 10
+
+  - name: rss_ai_feeds
+    type: rss_atom
+    enabled: true
+    entry_urls:
+      - https://openai.com/news/rss.xml
+      - https://www.anthropic.com/news/rss.xml
+      - https://huggingface.co/blog/feed.xml
+    discover_depth: 1
+    since: null
+    timeout_sec: 180
+    params: {}
+
+  - name: bilibili_up_todo
+    type: bilibili_up
+    enabled: false
+    entry_urls:
+      - https://space.bilibili.com/2/upload/video
+    discover_depth: 1
+    since: null
+    timeout_sec: 180
+    params: {}
+
+transcribe:
+  enabled_domains:
+    - bilibili.com
+  transcribe_since: 2025-01-01T00:00:00
+
+github_search:
+  keywords:
+    - llm
+    - rag
+    - agent
+    - inference
+    - serving
+  sort: stars
+  order: desc

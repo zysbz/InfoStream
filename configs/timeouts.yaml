@@ -1,0 +1,3 @@
+request_timeout_sec: 20
+source_timeout_sec: 180
+run_timeout_sec: 1800
