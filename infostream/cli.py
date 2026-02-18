@@ -3,9 +3,11 @@ from __future__ import annotations
 import argparse
 import json
 import os
+from datetime import datetime
 from pathlib import Path
 
 from infostream.config.loader import load_run_config, load_sources_config, load_timeouts_config, merge_add_urls
+from infostream.config.models import RunConfig
 from infostream.pipeline.orchestrator import run_pipeline
 from infostream.plugins.registry import build_default_registry
 
@@ -35,10 +37,14 @@ def _run(args: argparse.Namespace) -> int:
     registry = build_default_registry()
     sources_config = load_sources_config(args.sources)
     run_config = load_run_config(args.run_config)
+    if args.max_items is not None:
+        run_config = RunConfig.model_validate({**run_config.model_dump(mode="json"), "max_items": args.max_items})
     timeouts = load_timeouts_config(args.timeouts)
 
     merged_sources, rejected_add_urls = merge_add_urls(sources_config, args.add_url or [], registry)
     _validate_sources_with_registry(merged_sources, registry)
+
+    progress = None if args.no_progress else _build_progress_printer()
 
     run_meta = run_pipeline(
         sources=merged_sources,
@@ -49,6 +55,7 @@ def _run(args: argparse.Namespace) -> int:
         data_root=Path(args.data_root),
         registry=registry,
         rejected_add_urls=rejected_add_urls,
+        progress=progress,
     )
 
     print(
@@ -56,6 +63,10 @@ def _run(args: argparse.Namespace) -> int:
             {
                 "run_id": run_meta["run_id"],
                 "timed_out": run_meta["timed_out"],
+                "max_items_reached": run_meta["max_items_reached"],
+                "source_group_counts": run_meta.get("source_group_counts", {}),
+                "source_name_counts": run_meta.get("source_name_counts", {}),
+                "trending_source_limits": run_meta.get("trending_source_limits", {}),
                 "stats": run_meta["stats"],
                 "output_dir": run_meta["paths"]["run_dir"],
                 "digest_md": run_meta["paths"]["digest_md"],
@@ -111,6 +122,8 @@ def _build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--output-root", default="output")
     run_parser.add_argument("--data-root", default="data")
     run_parser.add_argument("--add-url", action="append", default=[])
+    run_parser.add_argument("--max-items", type=int, help="Maximum items to summarize (1-50)")
+    run_parser.add_argument("--no-progress", action="store_true", help="Disable runtime progress messages")
 
     validate_parser = subparsers.add_parser("validate-config", help="validate source and run configs")
     validate_parser.add_argument("--sources", default="configs/sources.yaml")
@@ -133,3 +146,48 @@ def _load_dotenv(path: Path) -> None:
         value = value.strip().strip('"').strip("'")
         if key and key not in os.environ:
             os.environ[key] = value
+
+
+def _build_progress_printer():
+    def _print(event: str, payload: dict[str, object]) -> None:
+        ts = datetime.now().strftime("%H:%M:%S")
+        if event == "run_started":
+            print(f"[{ts}] run_started run_id={payload.get('run_id')} sources={payload.get('sources_total')} max_items={payload.get('max_items')}")
+            limits = payload.get("trending_source_limits")
+            if isinstance(limits, dict) and limits:
+                print(f"[{ts}] trending_limits {json.dumps(limits, ensure_ascii=False)}")
+            return
+        if event == "source_started":
+            print(f"[{ts}] source_started {payload.get('source')} ({payload.get('source_type')})")
+            return
+        if event == "source_discovered":
+            print(f"[{ts}] source_discovered {payload.get('source')} entries={payload.get('entries')}")
+            return
+        if event == "source_discover_skipped_same_day_cache":
+            print(f"[{ts}] source_cache_reuse {payload.get('source')} cached={payload.get('cached_records')}")
+            return
+        if event == "source_skipped_cooldown":
+            print(f"[{ts}] source_skipped_cooldown {payload.get('source')} until={payload.get('blocked_until')}")
+            return
+        if event == "source_skipped_source_limit":
+            print(f"[{ts}] source_skipped_group_limit {payload.get('source')} limit={payload.get('source_limit')}")
+            return
+        if event == "source_skipped_source_name_limit":
+            print(f"[{ts}] source_skipped_name_limit {payload.get('source')} limit={payload.get('source_name_limit')}")
+            return
+        if event == "source_finished":
+            print(f"[{ts}] source_finished {payload.get('source')} candidates={payload.get('candidates')}")
+            return
+        if event == "max_items_reached":
+            print(f"[{ts}] max_items_reached {payload.get('max_items')}")
+            return
+        if event == "digest_generating":
+            print(f"[{ts}] digest_generating candidates={payload.get('candidates')}")
+            return
+        if event == "run_timeout_reached":
+            print(f"[{ts}] run_timeout_reached")
+            return
+        if event == "run_finished":
+            print(f"[{ts}] run_finished run_id={payload.get('run_id')}")
+
+    return _print

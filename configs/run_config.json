@@ -1,8 +1,19 @@
 ﻿{
-  "max_items": 50,
-  "prompt_template": "Summarize each item in concise Chinese with key insights.",
+  "max_items": 30,
+  "prompt_template": "请用中文输出结构化摘要，严格返回 one_liner、bullets(6条)、why_it_matters。",
   "focus_tags": [],
   "keywords": ["llm", "rag", "agent", "inference", "serving"],
   "priority_strategy": "github_hot_then_paper_blog_video",
-  "language": "zh-CN"
+  "language": "zh-CN",
+  "source_limits": {
+    "github": 22,
+    "bilibili": 5
+  },
+  "github_trending_total_limit": 21,
+  "timezone": "UTC+08:00",
+  "reuse_same_day": true,
+  "backfill_from_same_day_cache": true,
+  "skip_discover_if_cached_same_day": true,
+  "reuse_materialize_mode": "reference",
+  "rate_limit_break_on_403": true
 }

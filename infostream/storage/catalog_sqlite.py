@@ -12,6 +12,30 @@ class VersionDecision:
     is_new_version: bool
 
 
+@dataclass
+class DailyCacheRecord:
+    date_key: str
+    normalized_url: str
+    item_id: str
+    version: str
+    source_type: str
+    source_name: str
+    source_group: str
+    item_json_path: str
+    evidence_json_path: str
+    raw_root_path: str
+    fetched_at: str
+    run_id: str
+
+
+@dataclass
+class SourceCooldown:
+    source_group: str
+    blocked_until: str
+    reason: str
+    updated_at: str
+
+
 class CatalogSQLite:
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path
@@ -55,9 +79,43 @@ class CatalogSQLite:
                 error_code TEXT,
                 PRIMARY KEY (run_id, id, status)
             );
+
+            CREATE TABLE IF NOT EXISTS daily_url_cache (
+                date_key TEXT NOT NULL,
+                normalized_url TEXT NOT NULL,
+                item_id TEXT NOT NULL,
+                version TEXT NOT NULL,
+                source_type TEXT NOT NULL,
+                source_name TEXT NOT NULL DEFAULT '',
+                source_group TEXT NOT NULL,
+                item_json_path TEXT NOT NULL,
+                evidence_json_path TEXT NOT NULL,
+                raw_root_path TEXT NOT NULL,
+                fetched_at TEXT NOT NULL,
+                run_id TEXT NOT NULL,
+                PRIMARY KEY (date_key, normalized_url)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_daily_url_cache_group_fetched
+            ON daily_url_cache (date_key, source_group, fetched_at DESC);
+
+            CREATE TABLE IF NOT EXISTS source_cooldowns (
+                source_group TEXT PRIMARY KEY,
+                blocked_until TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
             """
         )
+        self._ensure_column("daily_url_cache", "source_name", "TEXT NOT NULL DEFAULT ''")
         self.conn.commit()
+
+    def _ensure_column(self, table: str, column: str, definition: str) -> None:
+        cols = self.conn.execute(f"PRAGMA table_info({table})").fetchall()
+        names = {str(row["name"]) for row in cols}
+        if column in names:
+            return
+        self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
     def upsert_version(
         self,
@@ -168,6 +226,204 @@ class CatalogSQLite:
             (run_id, item_id, version, status, error_code),
         )
         self.conn.commit()
+
+    def upsert_daily_url_cache(
+        self,
+        *,
+        date_key: str,
+        normalized_url: str,
+        item_id: str,
+        version: str,
+        source_type: str,
+        source_name: str,
+        source_group: str,
+        item_json_path: str,
+        evidence_json_path: str,
+        raw_root_path: str,
+        fetched_at: str,
+        run_id: str,
+    ) -> None:
+        self.conn.execute(
+            """
+            INSERT OR REPLACE INTO daily_url_cache (
+                date_key, normalized_url, item_id, version, source_type, source_name, source_group,
+                item_json_path, evidence_json_path, raw_root_path, fetched_at, run_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                date_key,
+                normalized_url,
+                item_id,
+                version,
+                source_type,
+                source_name,
+                source_group,
+                item_json_path,
+                evidence_json_path,
+                raw_root_path,
+                fetched_at,
+                run_id,
+            ),
+        )
+        self.conn.commit()
+
+    def get_daily_url_cache(self, date_key: str, normalized_url: str) -> DailyCacheRecord | None:
+        row = self.conn.execute(
+            """
+            SELECT
+                date_key, normalized_url, item_id, version, source_type, source_name, source_group,
+                item_json_path, evidence_json_path, raw_root_path, fetched_at, run_id
+            FROM daily_url_cache
+            WHERE date_key = ? AND normalized_url = ?
+            LIMIT 1
+            """,
+            (date_key, normalized_url),
+        ).fetchone()
+        if row is None:
+            return None
+        return DailyCacheRecord(
+            date_key=str(row["date_key"]),
+            normalized_url=str(row["normalized_url"]),
+            item_id=str(row["item_id"]),
+            version=str(row["version"]),
+            source_type=str(row["source_type"]),
+            source_name=str(row["source_name"] or ""),
+            source_group=str(row["source_group"]),
+            item_json_path=str(row["item_json_path"]),
+            evidence_json_path=str(row["evidence_json_path"]),
+            raw_root_path=str(row["raw_root_path"]),
+            fetched_at=str(row["fetched_at"]),
+            run_id=str(row["run_id"]),
+        )
+
+    def list_daily_cache(self, date_key: str) -> list[DailyCacheRecord]:
+        rows = self.conn.execute(
+            """
+            SELECT
+                date_key, normalized_url, item_id, version, source_type, source_name, source_group,
+                item_json_path, evidence_json_path, raw_root_path, fetched_at, run_id
+            FROM daily_url_cache
+            WHERE date_key = ?
+            ORDER BY fetched_at DESC
+            """,
+            (date_key,),
+        ).fetchall()
+        result: list[DailyCacheRecord] = []
+        for row in rows:
+            result.append(
+                DailyCacheRecord(
+                    date_key=str(row["date_key"]),
+                    normalized_url=str(row["normalized_url"]),
+                    item_id=str(row["item_id"]),
+                    version=str(row["version"]),
+                    source_type=str(row["source_type"]),
+                    source_name=str(row["source_name"] or ""),
+                    source_group=str(row["source_group"]),
+                    item_json_path=str(row["item_json_path"]),
+                    evidence_json_path=str(row["evidence_json_path"]),
+                    raw_root_path=str(row["raw_root_path"]),
+                    fetched_at=str(row["fetched_at"]),
+                    run_id=str(row["run_id"]),
+                )
+            )
+        return result
+
+    def list_daily_cache_by_source(self, date_key: str, source_type: str) -> list[DailyCacheRecord]:
+        rows = self.conn.execute(
+            """
+            SELECT
+                date_key, normalized_url, item_id, version, source_type, source_name, source_group,
+                item_json_path, evidence_json_path, raw_root_path, fetched_at, run_id
+            FROM daily_url_cache
+            WHERE date_key = ? AND source_type = ?
+            ORDER BY fetched_at DESC
+            """,
+            (date_key, source_type),
+        ).fetchall()
+        result: list[DailyCacheRecord] = []
+        for row in rows:
+            result.append(
+                DailyCacheRecord(
+                    date_key=str(row["date_key"]),
+                    normalized_url=str(row["normalized_url"]),
+                    item_id=str(row["item_id"]),
+                    version=str(row["version"]),
+                    source_type=str(row["source_type"]),
+                    source_name=str(row["source_name"] or ""),
+                    source_group=str(row["source_group"]),
+                    item_json_path=str(row["item_json_path"]),
+                    evidence_json_path=str(row["evidence_json_path"]),
+                    raw_root_path=str(row["raw_root_path"]),
+                    fetched_at=str(row["fetched_at"]),
+                    run_id=str(row["run_id"]),
+                )
+            )
+        return result
+
+    def list_daily_cache_by_source_name(self, date_key: str, source_name: str) -> list[DailyCacheRecord]:
+        rows = self.conn.execute(
+            """
+            SELECT
+                date_key, normalized_url, item_id, version, source_type, source_name, source_group,
+                item_json_path, evidence_json_path, raw_root_path, fetched_at, run_id
+            FROM daily_url_cache
+            WHERE date_key = ? AND source_name = ?
+            ORDER BY fetched_at DESC
+            """,
+            (date_key, source_name),
+        ).fetchall()
+        result: list[DailyCacheRecord] = []
+        for row in rows:
+            result.append(
+                DailyCacheRecord(
+                    date_key=str(row["date_key"]),
+                    normalized_url=str(row["normalized_url"]),
+                    item_id=str(row["item_id"]),
+                    version=str(row["version"]),
+                    source_type=str(row["source_type"]),
+                    source_name=str(row["source_name"] or ""),
+                    source_group=str(row["source_group"]),
+                    item_json_path=str(row["item_json_path"]),
+                    evidence_json_path=str(row["evidence_json_path"]),
+                    raw_root_path=str(row["raw_root_path"]),
+                    fetched_at=str(row["fetched_at"]),
+                    run_id=str(row["run_id"]),
+                )
+            )
+        return result
+
+    def set_source_cooldown(self, *, source_group: str, blocked_until: str, reason: str, updated_at: str) -> None:
+        self.conn.execute(
+            """
+            INSERT INTO source_cooldowns (source_group, blocked_until, reason, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(source_group) DO UPDATE SET
+                blocked_until = excluded.blocked_until,
+                reason = excluded.reason,
+                updated_at = excluded.updated_at
+            """,
+            (source_group, blocked_until, reason, updated_at),
+        )
+        self.conn.commit()
+
+    def get_source_cooldown(self, source_group: str) -> SourceCooldown | None:
+        row = self.conn.execute(
+            """
+            SELECT source_group, blocked_until, reason, updated_at
+            FROM source_cooldowns
+            WHERE source_group = ?
+            LIMIT 1
+            """,
+            (source_group,),
+        ).fetchone()
+        if row is None:
+            return None
+        return SourceCooldown(
+            source_group=str(row["source_group"]),
+            blocked_until=str(row["blocked_until"]),
+            reason=str(row["reason"]),
+            updated_at=str(row["updated_at"]),
+        )
 
     def close(self) -> None:
         self.conn.close()

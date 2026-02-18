@@ -21,8 +21,16 @@ class RSSAtomPlugin(SourcePlugin):
 
     def discover(self, source_config: "SourceConfig", client: httpx.Client, request_timeout_sec: int) -> list[Entry]:
         entries: list[Entry] = []
+        errors: list[str] = []
         for feed_url in source_config.entry_urls:
-            feed = feedparser.parse(feed_url)
+            try:
+                response = client.get(feed_url, timeout=request_timeout_sec)
+                response.raise_for_status()
+            except Exception as exc:
+                errors.append(f"{feed_url}: {exc.__class__.__name__}: {exc}")
+                continue
+
+            feed = feedparser.parse(response.text)
             for feed_entry in feed.entries:
                 link = feed_entry.get("link")
                 if not link:
@@ -34,9 +42,18 @@ class RSSAtomPlugin(SourcePlugin):
                         metadata={
                             "feed_url": feed_url,
                             "feed_entry": _to_plain_dict(feed_entry),
+                            "status_code": response.status_code,
+                            "headers": dict(response.headers),
                         },
                     )
                 )
+
+        if entries:
+            return entries
+
+        if errors:
+            raise RuntimeError("all RSS feeds failed: " + " | ".join(errors))
+
         return entries
 
     def fetch(self, entry: Entry, client: httpx.Client, request_timeout_sec: int) -> RawPayload:
@@ -46,8 +63,8 @@ class RSSAtomPlugin(SourcePlugin):
                 source_name=self.source_name,
                 content_type="feed_entry",
                 payload=entry.metadata["feed_entry"],
-                status_code=200,
-                headers={},
+                status_code=entry.metadata.get("status_code", 200),
+                headers=entry.metadata.get("headers", {}),
                 final_url=entry.url,
                 metadata={"feed_url": entry.metadata.get("feed_url")},
             )

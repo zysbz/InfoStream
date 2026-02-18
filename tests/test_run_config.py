@@ -1,0 +1,59 @@
+﻿import pytest
+from pydantic import ValidationError
+
+from infostream.config.models import RunConfig
+
+
+def test_run_config_default_max_items_is_10():
+    cfg = RunConfig()
+    assert cfg.max_items == 10
+
+
+def test_run_config_max_items_accepts_50():
+    cfg = RunConfig(max_items=50)
+    assert cfg.max_items == 50
+
+
+def test_run_config_max_items_rejects_over_50():
+    with pytest.raises(ValidationError):
+        RunConfig(max_items=51)
+
+
+def test_run_config_source_limits_accepts_values():
+    cfg = RunConfig(source_limits={"github": 10, "bilibili": 5})
+    assert cfg.source_limits["github"] == 10
+    assert cfg.source_limits["bilibili"] == 5
+
+
+def test_run_config_source_limits_rejects_over_50():
+    with pytest.raises(ValidationError):
+        RunConfig(source_limits={"github": 51})
+
+
+def test_run_config_timezone_accepts_utc_plus_8():
+    cfg = RunConfig(timezone="UTC+08:00")
+    assert cfg.timezone == "UTC+08:00"
+
+
+def test_run_config_timezone_rejects_invalid_value():
+    with pytest.raises(ValidationError):
+        RunConfig(timezone="INVALID_TIMEZONE")
+
+
+def test_run_config_reuse_defaults():
+    cfg = RunConfig()
+    assert cfg.reuse_same_day is True
+    assert cfg.backfill_from_same_day_cache is True
+    assert cfg.skip_discover_if_cached_same_day is True
+    assert cfg.reuse_materialize_mode == "reference"
+    assert cfg.rate_limit_break_on_403 is True
+
+
+def test_run_config_github_trending_total_limit_accepts_20():
+    cfg = RunConfig(github_trending_total_limit=20)
+    assert cfg.github_trending_total_limit == 20
+
+
+def test_run_config_github_trending_total_limit_rejects_large_value():
+    with pytest.raises(ValidationError):
+        RunConfig(github_trending_total_limit=201)

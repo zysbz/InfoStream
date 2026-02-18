@@ -1,5 +1,5 @@
 sources:
-  - name: github_trending_daily
+  - name: github_trending_weekly_global
     type: github_trending
     enabled: true
     entry_urls:
@@ -7,7 +7,43 @@ sources:
     discover_depth: 1
     since: null
     timeout_sec: 180
-    params: {}
+    params:
+      since: weekly
+
+  - name: github_trending_weekly_zh
+    type: github_trending
+    enabled: true
+    entry_urls:
+      - https://github.com/trending
+    discover_depth: 1
+    since: null
+    timeout_sec: 180
+    params:
+      since: weekly
+      spoken_language_code: zh
+
+  - name: github_trending_daily_global
+    type: github_trending
+    enabled: true
+    entry_urls:
+      - https://github.com/trending
+    discover_depth: 1
+    since: null
+    timeout_sec: 180
+    params:
+      since: daily
+
+  - name: github_trending_daily_zh
+    type: github_trending
+    enabled: true
+    entry_urls:
+      - https://github.com/trending
+    discover_depth: 1
+    since: null
+    timeout_sec: 180
+    params:
+      since: daily
+      spoken_language_code: zh
 
   - name: github_search_ai
     type: github_search
@@ -25,7 +61,6 @@ sources:
     enabled: true
     entry_urls:
       - https://openai.com/news/rss.xml
-      - https://www.anthropic.com/news/rss.xml
       - https://huggingface.co/blog/feed.xml
     discover_depth: 1
     since: null

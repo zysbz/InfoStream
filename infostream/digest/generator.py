@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime
 
 from infostream.config.models import RunConfig
 from infostream.contracts.item import DigestItem, Item
 from infostream.digest.llm_client import LLMClient
+from infostream.utils.timezone import parse_timezone
 
 
 def generate_digest(
@@ -32,7 +33,7 @@ def generate_digest(
         )
 
     digest_json: dict[str, object] = {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(parse_timezone(run_config.timezone)).isoformat(),
         "language": run_config.language,
         "total": len(digest_items),
         "items": [item.model_dump(mode="json") for item in digest_items],
@@ -63,9 +64,10 @@ def generate_digest(
 def _rank_items(items_with_paths: list[tuple[Item, str]], run_config: RunConfig) -> list[tuple[Item, str]]:
     focus_tags = {tag.lower() for tag in run_config.focus_tags}
     keywords = [kw.lower() for kw in run_config.keywords]
+    scored_all = sorted(items_with_paths, key=lambda pair: (_score_item(pair[0]), pair[0].fetched_at), reverse=True)
 
     filtered: list[tuple[Item, str]] = []
-    for item, local_path in items_with_paths:
+    for item, local_path in scored_all:
         if focus_tags and not focus_tags.intersection({tag.lower() for tag in item.tags}):
             continue
         if keywords:
@@ -75,9 +77,14 @@ def _rank_items(items_with_paths: list[tuple[Item, str]], run_config: RunConfig)
         filtered.append((item, local_path))
 
     if not filtered:
-        filtered = items_with_paths
+        return scored_all
 
-    return sorted(filtered, key=lambda pair: (_score_item(pair[0]), pair[0].fetched_at), reverse=True)
+    if len(filtered) >= run_config.max_items:
+        return filtered
+
+    filtered_ids = {item.id for item, _ in filtered}
+    remaining = [pair for pair in scored_all if pair[0].id not in filtered_ids]
+    return filtered + remaining
 
 
 def _score_item(item: Item) -> int:

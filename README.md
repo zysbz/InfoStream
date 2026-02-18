@@ -1,61 +1,120 @@
-# InfoStream
+﻿# InfoStream
 
-InfoStream is an extensible source ingestion and daily digest pipeline.
+[English](README.md) | [简体中文](README.zh-CN.md)
 
-## MVP Scope
+InfoStream is an extensible source-ingestion and daily-digest pipeline. It collects updates from multiple sources, normalizes and deduplicates content, stores reproducible run artifacts, and produces both human-readable and machine-readable digests.
 
-- Source plugins: `github_trending`, `github_search`, `rss_atom`
-- Bilibili plugin: scaffold only (`TODO`, disabled by default)
-- De-dup and versioning with SQLite (`data/catalog.db`)
-- Run output archive with provenance under `output/YYYYMMDD_HHMM/`
-- Digest output: `digest.md` and `digest.json`
-- OpenAI-backed summarization with deterministic fallback
+## Overview
 
-## Requirements
+InfoStream is designed for repeatable daily intelligence workflows:
 
-- Python 3.12+
+- Ingest from heterogeneous sources through a plugin registry.
+- Normalize into a shared item contract.
+- Persist source evidence and run metadata for auditability.
+- Deduplicate and version items with SQLite.
+- Generate AI summaries with deterministic fallback.
+
+## Features
+
+- Implemented source plugins:
+  - `github_trending`
+  - `github_search`
+  - `rss_atom`
+- `bilibili_up` plugin scaffold exists and is disabled in MVP.
+- SQLite catalog for deduplication/versioning (`data/catalog.db`).
+- Run-scoped archival outputs (`output/YYYYMMDD_HHMM/`).
+- Digest outputs:
+  - `digest.md` (human readable)
+  - `digest.json` (machine readable)
+- DashScope-compatible LLM client (default model `deepseek-v3.2`).
+- Runtime protections:
+  - same-day URL reuse
+  - same-day cache backfill
+  - source-group cooldown after GitHub `403` rate limit
+
+## Quick Start
+
+### Prerequisites
+
+- Python `3.12+`
 - `uv` recommended for dependency management
 
-## Install
+### Install
 
 ```powershell
 uv sync
 ```
 
-## Environment
+Optional (development dependencies):
 
-Create `.env` in project root:
+```powershell
+uv sync --extra dev
+```
+
+### Environment Variables
+
+Create `.env` at the project root (based on `.env.example`):
 
 ```env
-OPENAI_API_KEY=your_openai_key
+DASHSCOPE_API_KEY=your_dashscope_api_key
 GITHUB_TOKEN=optional_github_token
 ```
 
-`GITHUB_TOKEN` helps avoid search rate limits.
+- `DASHSCOPE_API_KEY`: required for LLM digest generation.
+- `GITHUB_TOKEN`: optional, increases GitHub API quota.
 
-## Run
-
-```powershell
-uv run main.py run --sources configs/sources.yaml --run-config configs/run_config.json --add-url https://github.com/trending
-```
-
-## Validate Config
+### Validate Configuration
 
 ```powershell
 uv run main.py validate-config --sources configs/sources.yaml --run-config configs/run_config.json
 ```
 
-## Test
+### Run One Pipeline
 
 ```powershell
-uv sync --extra dev
-uv run pytest -q --basetemp=./tmp_pytest
+uv run main.py run --sources configs/sources.yaml --run-config configs/run_config.json --timeouts configs/timeouts.yaml --output-root output --data-root data
 ```
 
-## List Plugins
+## Configuration
+
+Primary config files:
+
+- `configs/sources.yaml`
+  - source list (`name`, `type`, `enabled`, `entry_urls`, `params`, etc.)
+  - transcribe policy
+  - GitHub search keywords
+- `configs/run_config.json`
+  - runtime policy (`max_items`, `source_limits`, `timezone`, reuse/backfill switches, digest preferences)
+  - `max_items` range: `1-50` (model default is `10`)
+- `configs/timeouts.yaml`
+  - request/source/run timeouts
+
+Useful runtime overrides:
+
+```powershell
+uv run main.py run --max-items 20
+uv run main.py run --add-url https://github.com/trending
+uv run main.py run --no-progress
+```
+
+## CLI Usage
+
+List plugins:
 
 ```powershell
 uv run main.py list-plugins
+```
+
+Validate configs:
+
+```powershell
+uv run main.py validate-config --sources configs/sources.yaml --run-config configs/run_config.json
+```
+
+Run pipeline:
+
+```powershell
+uv run main.py run --sources configs/sources.yaml --run-config configs/run_config.json --timeouts configs/timeouts.yaml
 ```
 
 ## Output Layout
@@ -74,7 +133,7 @@ output/YYYYMMDD_HHMM/
   run_meta.json
 ```
 
-Each item folder:
+Each item bundle:
 
 ```text
 items/<source>__<title_sanitized>__<shortid>/
@@ -84,21 +143,35 @@ items/<source>__<title_sanitized>__<shortid>/
   raw/
 ```
 
-Windows path constraints are handled automatically (`<>:"/\\|?*`, reserved names, trailing dot/space).
+## Testing
 
-## Config Contracts
+```powershell
+uv run pytest -q --basetemp=./tmp_pytest
+```
 
-- `configs/sources.yaml`
-  - `sources[]`: `name`, `type`, `enabled`, `entry_urls`, `discover_depth`, `since`, `timeout_sec`, `params`
-  - `transcribe`: `enabled_domains`, `transcribe_since`
-  - `github_search`: `keywords`, `sort`, `order`
-- `configs/run_config.json`
-  - `max_items`, `prompt_template`, `focus_tags`, `keywords`, `priority_strategy`, `language`
-- `configs/timeouts.yaml`
-  - `request_timeout_sec`, `source_timeout_sec`, `run_timeout_sec`
+## Privacy and Security
 
-## Notes
+- Never commit `.env` or real tokens.
+- Keep API keys in environment variables only.
+- `output/` and `data/` are local runtime artifacts and should stay out of version control.
+- Review staged files before every push:
 
-- `--add-url` only applies to current run and is not persisted.
-- LLM failures do not fail the run; fallback summary is used.
-- NDJSON contract for future C++ integration: `docs/cpp_ndjson_contract.md`.
+```powershell
+git status --short
+git diff --cached --name-only
+```
+
+## Roadmap
+
+- Implement production-ready `bilibili_up` plugin.
+- Extend NDJSON interoperability for C++ ingestion core.
+- Add broader source templates and stronger policy controls.
+
+See also:
+
+- `docs/architecture.md`
+- `docs/cpp_ndjson_contract.md`
+
+## License
+
+Released under the MIT License. See [LICENSE](LICENSE).

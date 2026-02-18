@@ -5,6 +5,8 @@ import os
 import re
 from typing import Any
 
+import httpx
+
 from infostream.contracts.item import Item
 
 try:
@@ -13,12 +15,23 @@ except Exception:  # pragma: no cover - dependency/runtime guard
     OpenAI = None  # type: ignore[assignment]
 
 
+DASHSCOPE_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+
+
 class LLMClient:
-    def __init__(self, model: str = "gpt-4.1-mini", api_key: str | None = None) -> None:
+    def __init__(self, model: str = "deepseek-v3.2", api_key: str | None = None) -> None:
         self.model = model
-        self.api_key = api_key or os.getenv("OPENAI_API_KEY")
+        self.api_key = api_key or os.getenv("DASHSCOPE_API_KEY")
         self.enabled = bool(self.api_key and OpenAI is not None)
-        self.client = OpenAI(api_key=self.api_key) if self.enabled else None
+        self.client = (
+            OpenAI(
+                api_key=self.api_key,
+                base_url=DASHSCOPE_BASE_URL,
+                http_client=httpx.Client(trust_env=False, timeout=60.0),
+            )
+            if self.enabled
+            else None
+        )
 
     def summarize_item(self, item: Item, prompt_template: str, language: str = "zh-CN") -> dict[str, Any]:
         if not self.enabled or self.client is None:
@@ -35,14 +48,16 @@ class LLMClient:
         )
 
         try:
-            response = self.client.responses.create(
+            response = self.client.chat.completions.create(
                 model=self.model,
-                input=[
+                messages=[
                     {"role": "system", "content": "You produce concise JSON only."},
                     {"role": "user", "content": prompt},
                 ],
+                stream=False,
+                extra_body={"enable_thinking": False},
             )
-            text = getattr(response, "output_text", "") or _extract_response_text(response)
+            text = _extract_chat_completion_text(response)
             parsed = _parse_json_block(text)
             if not isinstance(parsed, dict):
                 raise ValueError("LLM output is not a JSON object")
@@ -96,16 +111,29 @@ def _parse_json_block(text: str) -> dict[str, Any] | list[Any] | None:
         return None
 
 
-def _extract_response_text(response: Any) -> str:
-    output = getattr(response, "output", None)
-    if not output:
+def _extract_chat_completion_text(response: Any) -> str:
+    choices = getattr(response, "choices", None)
+    if not choices:
         return ""
 
-    chunks: list[str] = []
-    for item in output:
-        content = getattr(item, "content", None) or []
+    first_choice = choices[0] if choices else None
+    message = getattr(first_choice, "message", None)
+    content = getattr(message, "content", "") if message else ""
+
+    if isinstance(content, str):
+        return content
+
+    if isinstance(content, list):
+        chunks: list[str] = []
         for block in content:
-            text = getattr(block, "text", None)
-            if text:
-                chunks.append(str(text))
-    return "\n".join(chunks)
+            if isinstance(block, dict):
+                block_text = block.get("text")
+                if block_text:
+                    chunks.append(str(block_text))
+            else:
+                block_text = getattr(block, "text", None)
+                if block_text:
+                    chunks.append(str(block_text))
+        return "\n".join(chunks)
+
+    return str(content or "")

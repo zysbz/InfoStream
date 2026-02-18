@@ -4,6 +4,7 @@ import hashlib
 import re
 from datetime import datetime
 from typing import Any
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import httpx
 from dateutil import parser as dt_parser
@@ -13,6 +14,25 @@ from infostream.contracts.plugin import PluginCapabilities, SourcePlugin
 
 _REPO_LINK = re.compile(r"href=\"/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)\"")
 _REPO_URL = re.compile(r"^https?://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/?$")
+_NON_REPO_OWNERS = {
+    "apps",
+    "sponsors",
+    "trending",
+    "topics",
+    "collections",
+    "features",
+    "marketplace",
+    "orgs",
+    "organizations",
+    "users",
+    "about",
+    "pricing",
+    "login",
+    "join",
+    "explore",
+    "events",
+    "settings",
+}
 
 
 class GitHubTrendingPlugin(SourcePlugin):
@@ -26,18 +46,29 @@ class GitHubTrendingPlugin(SourcePlugin):
     def discover(self, source_config: "SourceConfig", client: httpx.Client, request_timeout_sec: int) -> list[Entry]:
         entry_urls = source_config.entry_urls or ["https://github.com/trending"]
         entries: list[Entry] = []
+        token = source_config.params.get("github_token") or source_config.params.get("token")
+        trending_since = str(source_config.params.get("since") or source_config.params.get("period") or "weekly").lower()
+        spoken_language_code = str(source_config.params.get("spoken_language_code") or "").strip().lower()
+        if trending_since not in {"daily", "weekly", "monthly"}:
+            trending_since = "weekly"
 
         for entry_url in entry_urls:
             if "github.com/trending" in entry_url:
-                response = client.get(entry_url, timeout=request_timeout_sec)
+                target_url = _with_trending_filters(entry_url, trending_since, spoken_language_code)
+                response = client.get(target_url, timeout=request_timeout_sec)
                 response.raise_for_status()
-                repos = sorted(set(_REPO_LINK.findall(response.text)))
+                repos = sorted(set(repo for repo in _REPO_LINK.findall(response.text) if _is_repo_candidate(repo)))
                 for repo in repos:
                     entries.append(
                         Entry(
                             url=f"https://github.com/{repo}",
                             source_name=self.source_name,
-                            metadata={"from": "trending_html"},
+                            metadata={
+                                "from": "trending_html",
+                                "github_token": token,
+                                "trending_since": trending_since,
+                                "spoken_language_code": spoken_language_code,
+                            },
                         )
                     )
                 continue
@@ -64,6 +95,11 @@ class GitHubTrendingPlugin(SourcePlugin):
                         repo_url = f"https://github.com/{author}/{name}"
                 if not repo_url:
                     continue
+                if repo_url.startswith("/"):
+                    repo_url = f"https://github.com{repo_url}"
+                match = _REPO_URL.match(repo_url)
+                if match and not _is_repo_candidate(f"{match.group(1)}/{match.group(2)}"):
+                    continue
 
                 entries.append(
                     Entry(
@@ -73,6 +109,7 @@ class GitHubTrendingPlugin(SourcePlugin):
                             "repo": record,
                             "status_code": response.status_code,
                             "headers": dict(response.headers),
+                            "github_token": token,
                         },
                     )
                 )
@@ -95,7 +132,11 @@ class GitHubTrendingPlugin(SourcePlugin):
         match = _REPO_URL.match(entry.url)
         if match:
             owner, repo = match.group(1), match.group(2)
-            response = client.get(f"https://api.github.com/repos/{owner}/{repo}", timeout=request_timeout_sec)
+            headers = {"Accept": "application/vnd.github+json"}
+            token = entry.metadata.get("github_token")
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
+            response = client.get(f"https://api.github.com/repos/{owner}/{repo}", headers=headers, timeout=request_timeout_sec)
             response.raise_for_status()
             return RawPayload(
                 entry_url=entry.url,
@@ -191,6 +232,29 @@ def _parse_datetime(value: Any) -> datetime | None:
         return dt_parser.parse(str(value))
     except Exception:
         return None
+
+
+def _with_trending_filters(url: str, since: str, spoken_language_code: str) -> str:
+    parts = urlsplit(url)
+    query_pairs = parse_qsl(parts.query, keep_blank_values=True)
+    filtered = [(key, value) for key, value in query_pairs if key not in {"since", "spoken_language_code"}]
+    filtered.append(("since", since))
+    if spoken_language_code:
+        filtered.append(("spoken_language_code", spoken_language_code))
+    query = urlencode(filtered, doseq=True)
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, query, ""))
+
+
+def _is_repo_candidate(path: str) -> bool:
+    parts = [segment for segment in path.split("/") if segment]
+    if len(parts) != 2:
+        return False
+    owner, repo = parts[0].lower(), parts[1].lower()
+    if owner in _NON_REPO_OWNERS:
+        return False
+    if repo in {"developers"}:
+        return False
+    return True
 
 
 from infostream.config.models import SourceConfig

@@ -3,22 +3,26 @@ from __future__ import annotations
 import json
 import traceback
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, tzinfo
 from pathlib import Path
 from typing import Any
 
 
 class RunLogger:
-    def __init__(self, logs_dir: Path) -> None:
+    def __init__(self, logs_dir: Path, local_tz: tzinfo = timezone.utc) -> None:
         self.logs_dir = logs_dir
+        self.local_tz = local_tz
         self.logs_dir.mkdir(parents=True, exist_ok=True)
         self.log_path = self.logs_dir / "run.log"
         self.errors_path = self.logs_dir / "errors.json"
         self.errors: list[dict[str, Any]] = []
 
     def log(self, level: str, event: str, **data: Any) -> None:
+        now_utc = datetime.now(timezone.utc)
         payload = {
-            "ts": datetime.now(timezone.utc).isoformat(),
+            "ts": now_utc.isoformat(),
+            "ts_utc": now_utc.isoformat(),
+            "ts_local": now_utc.astimezone(self.local_tz).isoformat(),
             "level": level.upper(),
             "event": event,
             **data,

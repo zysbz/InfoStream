@@ -3,9 +3,13 @@ __pycache__/
 .pytest_cache/
 .venv/
 .uv-cache/
+.vscode/
 output/
 data/
 .env
 tmp/
 tmp_pytest/
+tmp_pytest_*/
+tmp_smoke_*/
 pytest-cache-files-*/
+docs/
