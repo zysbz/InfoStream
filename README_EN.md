@@ -4,6 +4,10 @@ English | [简体中文](README.md)
 
 InfoStream is an extensible source-ingestion and daily-digest pipeline. It collects updates from multiple sources, normalizes and deduplicates content, stores reproducible run artifacts, and produces both human-readable and machine-readable digests.
 
+## Preview
+
+![InfoStream web preview](docs/assets/infostream-web-preview.png)
+
 ## Overview
 
 InfoStream is designed for repeatable daily intelligence workflows:

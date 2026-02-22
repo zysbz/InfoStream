@@ -121,6 +121,11 @@ class ArchiveWriter:
         (self.run_dir / "digest.md").write_text(digest_md, encoding="utf-8")
         (self.run_dir / "digest.json").write_text(json.dumps(digest_json, ensure_ascii=False, indent=2), encoding="utf-8")
 
+    def write_summary(self, summary_md: str) -> Path:
+        summary_path = self.run_dir / "summary.md"
+        summary_path.write_text(summary_md, encoding="utf-8")
+        return summary_path
+
     def write_run_meta(self, meta: dict[str, Any]) -> None:
         (self.run_dir / "run_meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
 

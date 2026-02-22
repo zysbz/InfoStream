@@ -71,6 +71,9 @@ def _run(args: argparse.Namespace) -> int:
                 "output_dir": run_meta["paths"]["run_dir"],
                 "digest_md": run_meta["paths"]["digest_md"],
                 "digest_json": run_meta["paths"]["digest_json"],
+                "summary_md": run_meta["paths"].get("summary_md", ""),
+                "web_html": run_meta["paths"].get("web_html", ""),
+                "web_opened": run_meta["paths"].get("web_opened", False),
                 "errors_json": run_meta["paths"]["errors_json"],
                 "rejected_add_urls": run_meta["rejected_add_urls"],
             },
@@ -122,7 +125,7 @@ def _build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--output-root", default="output")
     run_parser.add_argument("--data-root", default="data")
     run_parser.add_argument("--add-url", action="append", default=[])
-    run_parser.add_argument("--max-items", type=int, help="Maximum items to summarize (1-50)")
+    run_parser.add_argument("--max-items", type=int, help="Maximum items to summarize (1-200)")
     run_parser.add_argument("--no-progress", action="store_true", help="Disable runtime progress messages")
 
     validate_parser = subparsers.add_parser("validate-config", help="validate source and run configs")

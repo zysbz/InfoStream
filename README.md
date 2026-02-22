@@ -4,6 +4,10 @@
 
 InfoStream 是一个可扩展的信息源采集与每日摘要流水线。它从多个来源抓取更新，统一结构、去重并沉淀可追溯产物，最终输出人读和机读两种摘要结果。
 
+## 界面预览
+
+![InfoStream 网页预览](docs/assets/infostream-web-preview.png)
+
 ## Overview
 
 InfoStream 面向可重复执行的日常信息流工作：

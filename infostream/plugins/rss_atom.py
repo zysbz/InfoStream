@@ -15,7 +15,7 @@ from infostream.contracts.plugin import PluginCapabilities, SourcePlugin
 class RSSAtomPlugin(SourcePlugin):
     source_name = "rss_atom"
     supported_url_patterns = [
-        r"^https?://.*(rss|atom|feed|\.xml)(\?.*)?$",
+        r"^https?://.*(?:/rss(?:/.*|$)|/atom(?:/.*|$)|/feed(?:/.*|$)|\.(?:xml|rss|atom))(?:\?.*)?$",
     ]
     capabilities = PluginCapabilities(supports_discover=True, supports_transcribe=False, requires_auth=False)
 

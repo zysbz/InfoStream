@@ -42,12 +42,13 @@ class SourcesFileConfig(BaseModel):
 
 
 class RunConfig(BaseModel):
-    max_items: int = Field(default=10, ge=1, le=50)
+    max_items: int = Field(default=10, ge=1, le=200)
     prompt_template: str = "Summarize the item into one_liner, 3 bullets, and why_it_matters."
     focus_tags: list[str] = Field(default_factory=list)
     keywords: list[str] = Field(default_factory=list)
     priority_strategy: str = "github_hot_then_paper_blog_video"
     language: str = "zh-CN"
+    llm_model: str = "deepseek-v3.2"
     source_limits: dict[str, int] = Field(
         default_factory=lambda: {
             "github": 10,
@@ -73,6 +74,14 @@ class RunConfig(BaseModel):
             if limit < 1 or limit > 50:
                 raise ValueError("source_limits value must be between 1 and 50")
             normalized[key_norm] = limit
+        return normalized
+
+    @field_validator("llm_model")
+    @classmethod
+    def validate_llm_model(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("llm_model must not be empty")
         return normalized
 
     @field_validator("timezone")

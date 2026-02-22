@@ -1,10 +1,13 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from collections import defaultdict
+import html
 import hashlib
 import json
 import os
+import re
 import time
+import webbrowser
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -24,6 +27,15 @@ from infostream.storage.archive_writer import ArchiveWriter, ItemWriteResult
 from infostream.storage.catalog_sqlite import CatalogSQLite, DailyCacheRecord
 from infostream.utils.timezone import date_key_for_timezone, parse_timezone
 from infostream.utils.url_norm import normalize_url
+
+WEB_SUMMARY_PROMPT_PATH = Path("\u7f51\u9875prompt.md")
+FIXED_WEB_HTML_NAME = "latest.html"
+AUTO_OPEN_WEB_ENV = "INFOSTREAM_AUTO_OPEN_WEB"
+DEFAULT_WEB_SUMMARY_PROMPT = (
+    "Summarize the input digest markdown into a concise markdown report. "
+    "Keep facts grounded in the source and do not add external information. "
+    "Do not include Source, URL, Local, or file paths in output."
+)
 
 
 def run_pipeline(
@@ -53,7 +65,7 @@ def run_pipeline(
             transcribe_since=transcribe_config.transcribe_since,
         )
     )
-    llm_client = LLMClient()
+    llm_client = LLMClient(model=run_config.llm_model)
 
     stats: dict[str, Any] = {
         "sources_total": len(sources),
@@ -584,6 +596,40 @@ def run_pipeline(
         )
         digest_md, digest_json = generate_digest(digest_candidates, run_config, llm_client)
         writer.write_digest(digest_md, digest_json)
+        summary_md_path = ""
+        fixed_web_html_path = ""
+        web_opened = False
+
+        try:
+            web_prompt = _load_web_summary_prompt(WEB_SUMMARY_PROMPT_PATH)
+            summary_md_raw = llm_client.summarize_markdown(digest_md, web_prompt, run_config.language)
+            summary_md = _normalize_summary_markdown(
+                summary_md_raw,
+                generated_at=str(digest_json.get("generated_at", "")),
+                language=run_config.language,
+            )
+            summary_md_path = str(writer.write_summary(summary_md))
+
+            fixed_html_path = output_root / FIXED_WEB_HTML_NAME
+            _write_fixed_web_html(summary_md, fixed_html_path)
+            fixed_web_html_path = str(fixed_html_path)
+            web_opened = _maybe_open_web_html(fixed_html_path, logger)
+
+            logger.info(
+                "summary_web_generated",
+                summary_md=summary_md_path,
+                web_html=fixed_web_html_path,
+                web_opened=web_opened,
+            )
+        except Exception as exc:
+            logger.error(
+                stage="summary_web",
+                source="pipeline",
+                url=str(writer.run_dir / "digest.md"),
+                error_type=exc.__class__.__name__,
+                message=str(exc),
+                exc=exc,
+            )
 
         run_meta = {
             "run_id": run_id,
@@ -602,6 +648,9 @@ def run_pipeline(
                 "run_dir": str(writer.run_dir),
                 "digest_md": str(writer.run_dir / "digest.md"),
                 "digest_json": str(writer.run_dir / "digest.json"),
+                "summary_md": summary_md_path,
+                "web_html": fixed_web_html_path,
+                "web_opened": web_opened,
                 "errors_json": str(writer.logs_dir / "errors.json"),
             },
             "run_config": run_config.model_dump(mode="json"),
@@ -935,6 +984,322 @@ def _extract_trending_filters(source: SourceConfig) -> tuple[str, str]:
     return since, spoken_language_code
 
 
+def _normalize_summary_markdown(summary_md: str, generated_at: str, language: str) -> str:
+    is_zh = language.lower().startswith("zh")
+    title = "每日科技动态" if is_zh else "Daily Tech Digest"
+    time_label = "时间" if is_zh else "Time"
+
+    sections = _extract_summary_sections(summary_md)
+    if not sections:
+        default_title = "今日要点" if is_zh else "Highlights"
+        default_line = (
+            "1. **暂无要点**：当日未提取到可展示内容。"
+            if is_zh
+            else "1. **No highlights**: No displayable content was extracted."
+        )
+        sections = [(default_title, [default_line])]
+
+    lines: list[str] = [
+        f"# {title}",
+        "",
+        f"**{time_label}：{_format_summary_date(generated_at, is_zh)}**",
+        "",
+        "---",
+        "",
+    ]
+
+    for index, (section_title, section_body) in enumerate(sections, start=1):
+        if is_zh:
+            section_prefix = _to_cn_number(index)
+            heading = f"## {section_prefix}、{section_title}"
+            empty_line = "1. **暂无更新**：本分区暂无可展示内容。"
+        else:
+            heading = f"## {index}. {section_title}"
+            empty_line = "1. **No updates**: This section has no displayable content."
+
+        lines.append(heading)
+        lines.append("")
+        lines.extend(section_body or [empty_line])
+        lines.append("")
+
+        if index < len(sections):
+            lines.extend(["---", ""])
+
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _extract_summary_sections(summary_md: str) -> list[tuple[str, list[str]]]:
+    text = summary_md.replace("\r\n", "\n").replace("\r", "\n").lstrip("\ufeff")
+    if not text.strip():
+        return []
+
+    lines = text.split("\n")
+    cleaned_lines: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            cleaned_lines.append("")
+            continue
+        if stripped.startswith("# "):
+            continue
+        if re.match(r"^\*\*(时间|Time)\s*[:：]", stripped):
+            continue
+        if re.match(r"^-{3,}$", stripped):
+            continue
+        cleaned_lines.append(line.rstrip())
+
+    preface: list[str] = []
+    sections: list[tuple[str, list[str]]] = []
+    current_title: str | None = None
+    current_body: list[str] = []
+
+    for index, line in enumerate(cleaned_lines):
+        heading_title = _detect_summary_section_heading(cleaned_lines, index)
+        if heading_title is not None:
+            if current_title is not None:
+                sections.append((_clean_section_title(current_title), _clean_section_body(current_body)))
+            else:
+                preface = _clean_section_body(current_body)
+            current_title = heading_title
+            current_body = []
+            continue
+        current_body.append(line)
+
+    if current_title is not None:
+        sections.append((_clean_section_title(current_title), _clean_section_body(current_body)))
+    else:
+        preface = _clean_section_body(current_body)
+
+    if not sections and preface:
+        return [("今日要点", preface)]
+
+    if sections and preface:
+        first_title, first_body = sections[0]
+        merged = preface + ([""] if first_body else []) + first_body
+        sections[0] = (first_title, _clean_section_body(merged))
+
+    normalized_sections: list[tuple[str, list[str]]] = []
+    for title, body in sections:
+        safe_title = title or "今日要点"
+        normalized_sections.append((safe_title, body))
+    return normalized_sections
+
+
+def _clean_section_title(title: str) -> str:
+    result = title.strip()
+    result = re.sub(r"^[（(]?\d+[)）.\-、\s]*", "", result)
+    result = re.sub(r"^[（(]?[一二三四五六七八九十百]+[)）.\-、\s]*", "", result)
+    result = re.sub(r"^第[一二三四五六七八九十百\d]+[章节部分、.\-\s]*", "", result)
+    return result.strip()
+
+
+def _detect_summary_section_heading(lines: list[str], index: int) -> str | None:
+    line = lines[index].strip()
+    if not line:
+        return None
+    if re.match(r"^-{3,}$", line):
+        return None
+    if re.match(r"^\*\*(时间|Time)\s*[:：]", line):
+        return None
+
+    h2_match = re.match(r"^##\s+(.+)$", line)
+    if h2_match:
+        return h2_match.group(1).strip()
+
+    next_non_empty = _next_non_empty_line(lines, index + 1)
+
+    numbered_match = re.match(r"^(?:第?[一二三四五六七八九十百\d]+[、.．)]|\d+\.)\s*(.+)$", line)
+    if numbered_match:
+        candidate = numbered_match.group(1).strip()
+        if _is_likely_section_title(candidate, next_non_empty):
+            return candidate
+
+    plain_candidate = line.strip()
+    if _is_likely_section_title(plain_candidate, next_non_empty):
+        return plain_candidate
+
+    return None
+
+
+def _next_non_empty_line(lines: list[str], start_index: int) -> str:
+    for idx in range(start_index, len(lines)):
+        if lines[idx].strip():
+            return lines[idx].strip()
+    return ""
+
+
+def _is_likely_section_title(candidate: str, next_non_empty: str) -> bool:
+    text = candidate.strip()
+    if not text:
+        return False
+    if text.startswith("**"):
+        return False
+    if len(text) > 32:
+        return False
+    if "：" in text or ":" in text:
+        return False
+    if text.startswith("- ") or text.startswith("* "):
+        return False
+    if text.endswith("。"):
+        return False
+
+    lowered = text.lower()
+    section_keywords = (
+        "模型",
+        "企业",
+        "政策",
+        "全球",
+        "科研",
+        "基准",
+        "商业",
+        "平台",
+        "生态",
+        "安全",
+        "开源",
+        "项目",
+        "要点",
+        "highlight",
+    )
+    has_keyword = any(keyword in lowered for keyword in section_keywords)
+    if has_keyword and (not next_non_empty or re.match(r"^(?:\d+\.\s+|[-*]\s+).+", next_non_empty)):
+        return True
+
+    if re.match(r"^\d+\.\s+\*\*.+", next_non_empty):
+        return True
+    if re.match(r"^\d+\.\s+.+", next_non_empty) and ("：" in next_non_empty or ":" in next_non_empty):
+        return True
+    if re.match(r"^[-*]\s+.+", next_non_empty):
+        return True
+    return False
+
+
+def _clean_section_body(lines: list[str]) -> list[str]:
+    output: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if re.match(r"^-{3,}$", stripped):
+            continue
+        if re.match(r"^\*\*(时间|Time)\s*[:：]", stripped):
+            continue
+        output.append(line.rstrip())
+
+    while output and not output[0].strip():
+        output.pop(0)
+    while output and not output[-1].strip():
+        output.pop()
+    return output
+
+
+def _format_summary_date(generated_at: str, is_zh: bool) -> str:
+    raw = generated_at.strip()
+    if not raw:
+        now = datetime.now()
+        return f"{now.year}年{now.month}月{now.day}日" if is_zh else now.strftime("%Y-%m-%d")
+
+    candidate = raw.replace("Z", "+00:00")
+    try:
+        dt = datetime.fromisoformat(candidate)
+        if is_zh:
+            return f"{dt.year}年{dt.month}月{dt.day}日"
+        return dt.strftime("%Y-%m-%d")
+    except ValueError:
+        return raw
+
+
+def _to_cn_number(number: int) -> str:
+    mapping = [
+        "一",
+        "二",
+        "三",
+        "四",
+        "五",
+        "六",
+        "七",
+        "八",
+        "九",
+        "十",
+        "十一",
+        "十二",
+        "十三",
+        "十四",
+        "十五",
+        "十六",
+        "十七",
+        "十八",
+        "十九",
+        "二十",
+    ]
+    if 1 <= number <= len(mapping):
+        return mapping[number - 1]
+    return str(number)
+
+
+def _load_web_summary_prompt(path: Path) -> str:
+    prompt_text = _read_text_with_fallback(path, encodings=["utf-8-sig", "utf-8", "gb18030", "gbk"])
+    if prompt_text.strip():
+        return prompt_text
+    return DEFAULT_WEB_SUMMARY_PROMPT
+
+
+def _read_text_with_fallback(path: Path, encodings: list[str]) -> str:
+    if not path.exists():
+        return ""
+
+    for encoding in encodings:
+        try:
+            return path.read_text(encoding=encoding)
+        except UnicodeDecodeError:
+            continue
+        except OSError:
+            return ""
+    return ""
+
+
+def _write_fixed_web_html(summary_md: str, output_path: Path) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    html_doc = _render_summary_html(summary_md)
+    output_path.write_text(html_doc, encoding="utf-8")
+
+
+def _maybe_open_web_html(output_path: Path, logger: RunLogger) -> bool:
+    if not _should_auto_open_web():
+        return False
+
+    try:
+        target = output_path.resolve().as_uri()
+        opened = bool(webbrowser.open(target))
+        if opened:
+            logger.info("web_opened", web_html=str(output_path), target=target)
+        else:
+            logger.warning("web_open_failed", web_html=str(output_path), reason="webbrowser.open returned False")
+        return opened
+    except Exception as exc:
+        logger.warning("web_open_failed", web_html=str(output_path), reason=str(exc))
+        return False
+
+
+def _should_auto_open_web() -> bool:
+    raw = str(os.getenv(AUTO_OPEN_WEB_ENV, "1")).strip().lower()
+    return raw not in {"0", "false", "no", "off"}
+
+
+def _render_summary_html(summary_md: str) -> str:
+    try:
+        from web_generator import build_html, infer_title, normalize_markdown
+
+        normalized = normalize_markdown(summary_md)
+        title = infer_title(normalized, "Daily Tech Digest")
+        return build_html(title, normalized)
+    except Exception:
+        safe_text = html.escape(summary_md)
+        return (
+            "<!doctype html><html><head><meta charset=\"UTF-8\"><meta name=\"viewport\""
+            " content=\"width=device-width, initial-scale=1.0\"><title>Summary</title></head>"
+            "<body><pre style=\"white-space: pre-wrap; word-wrap: break-word;\">"
+            f"{safe_text}</pre></body></html>"
+        )
+
+
 def _emit_progress(
     progress: Callable[[str, dict[str, Any]], None] | None,
     event: str,
@@ -990,3 +1355,4 @@ def _source_group(source_type: str) -> str:
 
 def _is_source_limit_reached(source_group_counts: dict[str, int], source_group: str, source_limit: int | None) -> bool:
     return source_limit is not None and source_group_counts[source_group] >= source_limit
+

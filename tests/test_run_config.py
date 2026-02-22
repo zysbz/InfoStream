@@ -9,14 +9,29 @@ def test_run_config_default_max_items_is_10():
     assert cfg.max_items == 10
 
 
-def test_run_config_max_items_accepts_50():
-    cfg = RunConfig(max_items=50)
-    assert cfg.max_items == 50
+def test_run_config_default_llm_model_is_deepseek():
+    cfg = RunConfig()
+    assert cfg.llm_model == "deepseek-v3.2"
 
 
-def test_run_config_max_items_rejects_over_50():
+def test_run_config_llm_model_accepts_qwen():
+    cfg = RunConfig(llm_model="qwen3.5-397b-a17b")
+    assert cfg.llm_model == "qwen3.5-397b-a17b"
+
+
+def test_run_config_llm_model_rejects_blank():
     with pytest.raises(ValidationError):
-        RunConfig(max_items=51)
+        RunConfig(llm_model="   ")
+
+
+def test_run_config_max_items_accepts_200():
+    cfg = RunConfig(max_items=200)
+    assert cfg.max_items == 200
+
+
+def test_run_config_max_items_rejects_over_200():
+    with pytest.raises(ValidationError):
+        RunConfig(max_items=201)
 
 
 def test_run_config_source_limits_accepts_values():

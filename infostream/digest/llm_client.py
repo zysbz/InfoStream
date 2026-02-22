@@ -1,5 +1,6 @@
 ﻿from __future__ import annotations
 
+from datetime import datetime
 import json
 import os
 import re
@@ -76,6 +77,43 @@ class LLMClient:
         except Exception:
             return self._fallback_summary(item)
 
+    def summarize_markdown(self, markdown: str, prompt_template: str, language: str = "zh-CN") -> str:
+        cleaned = markdown.strip()
+        if not cleaned:
+            return self._fallback_markdown_summary(markdown, language)
+
+        if not self.enabled or self.client is None:
+            return self._fallback_markdown_summary(markdown, language)
+
+        prompt = (
+            f"{prompt_template}\n"
+            "You will receive a markdown digest. Return a further condensed markdown summary."
+            " Keep facts strictly grounded in the source markdown."
+            " Do not output fenced code blocks. Do not output explanations."
+            f" Language: {language}.\n"
+            "Source markdown:\n"
+            f"{cleaned[:18000]}"
+        )
+
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": "You produce concise markdown only."},
+                    {"role": "user", "content": prompt},
+                ],
+                stream=False,
+                extra_body={"enable_thinking": False},
+            )
+            text = _extract_chat_completion_text(response)
+            normalized = _normalize_markdown_response(text)
+            if normalized:
+                return normalized
+        except Exception:
+            pass
+
+        return self._fallback_markdown_summary(markdown, language)
+
     def _fallback_summary(self, item: Item) -> dict[str, Any]:
         text = re.sub(r"\s+", " ", item.text or "").strip()
         one_liner = text[:120] if text else f"{item.title} ({item.source})"
@@ -90,6 +128,35 @@ class LLMClient:
             "bullets": bullets[:3],
             "why_it_matters": None,
         }
+
+    def _fallback_markdown_summary(self, markdown: str, language: str = "zh-CN") -> str:
+        generated_at = _extract_generated_at(markdown)
+        time_display = _format_generated_at(generated_at)
+        is_zh = language.lower().startswith("zh")
+        title = "每日科技动态" if is_zh else "Daily Tech Digest"
+        summary_heading = "今日要点" if is_zh else "Highlights"
+        time_prefix = "时间" if is_zh else "Time"
+        empty_text = "暂无可用摘要内容。" if is_zh else "No summary content available."
+        default_summary = "详情见原文。" if is_zh else "See details in the original digest."
+
+        items = _extract_digest_items(markdown)
+
+        lines = [
+            f"# {title}",
+            "",
+            f"**{time_prefix}：{time_display}**",
+            "",
+            f"## {summary_heading}",
+        ]
+        if not items:
+            lines.extend(["", empty_text, ""])
+            return "\n".join(lines)
+
+        lines.append("")
+        for index, (item_title, item_desc) in enumerate(items, start=1):
+            lines.append(f"{index}. **{item_title}**：{item_desc or default_summary}")
+        lines.append("")
+        return "\n".join(lines)
 
 
 def _parse_json_block(text: str) -> dict[str, Any] | list[Any] | None:
@@ -137,3 +204,71 @@ def _extract_chat_completion_text(response: Any) -> str:
         return "\n".join(chunks)
 
     return str(content or "")
+
+
+def _normalize_markdown_response(text: str) -> str:
+    normalized = text.strip()
+    if not normalized:
+        return ""
+
+    fence_match = re.match(r"^```(?:markdown|md)?\s*([\s\S]*?)\s*```$", normalized, flags=re.IGNORECASE)
+    if fence_match:
+        normalized = fence_match.group(1).strip()
+
+    if not normalized:
+        return ""
+    return normalized + "\n"
+
+
+def _extract_generated_at(markdown: str) -> str:
+    match = re.search(r"^- Generated at:\s*(.+?)\s*$", markdown, flags=re.MULTILINE)
+    if not match:
+        return ""
+    return match.group(1).strip()
+
+
+def _format_generated_at(raw: str) -> str:
+    if not raw:
+        return datetime.now().strftime("%Y-%m-%d")
+
+    candidate = raw.strip().replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(candidate)
+        return parsed.strftime("%Y年%m月%d日")
+    except ValueError:
+        return raw
+
+
+def _extract_digest_items(markdown: str) -> list[tuple[str, str]]:
+    heading_re = re.compile(r"^##\s+\d+\.\s+(.+?)\s*$")
+    lines = markdown.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+
+    heading_indexes: list[tuple[int, str]] = []
+    for idx, line in enumerate(lines):
+        match = heading_re.match(line.strip())
+        if match:
+            heading_indexes.append((idx, match.group(1).strip()))
+
+    result: list[tuple[str, str]] = []
+    for i, (start_idx, title) in enumerate(heading_indexes):
+        end_idx = heading_indexes[i + 1][0] if i + 1 < len(heading_indexes) else len(lines)
+        block = lines[start_idx + 1 : end_idx]
+
+        one_liner = ""
+        fallback_bullet = ""
+        for raw in block:
+            text = raw.strip()
+            if not text:
+                continue
+            if text.startswith("- Source:") or text.startswith("- Local:"):
+                continue
+            if text.startswith("- "):
+                if not fallback_bullet:
+                    fallback_bullet = text[2:].strip()
+                continue
+            one_liner = text
+            break
+
+        result.append((title, one_liner or fallback_bullet))
+
+    return result

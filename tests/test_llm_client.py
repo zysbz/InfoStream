@@ -97,3 +97,44 @@ def test_llm_client_non_json_falls_back(monkeypatch):
     assert result["one_liner"]
     assert len(result["bullets"]) == 3
     assert result["why_it_matters"] is None
+
+
+def test_llm_client_uses_configured_model(monkeypatch):
+    captured: dict = {}
+    response_content = '{"one_liner":"一句话","bullets":["a","b","c"],"why_it_matters":"重要"}'
+    _patch_openai(monkeypatch, response_content, captured)
+
+    client = llm_module.LLMClient(model="qwen3.5-397b-a17b", api_key="test-key")
+    _ = client.summarize_item(_build_item(), "test prompt", "zh-CN")
+
+    kwargs = captured["kwargs"]
+    assert kwargs["model"] == "qwen3.5-397b-a17b"
+
+
+def test_llm_client_summarize_markdown_without_key_uses_fallback(monkeypatch):
+    monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
+    client = llm_module.LLMClient(api_key=None)
+
+    digest_md = (
+        "# Daily Digest\n\n"
+        "- Generated at: 2026-02-22T12:00:00+08:00\n\n"
+        "## 1. owner/repo\n"
+        "This is a useful project.\n"
+        "- Source: https://github.com/owner/repo\n"
+    )
+    result = client.summarize_markdown(digest_md, "prompt", "zh-CN")
+
+    assert "# 每日科技动态" in result
+    assert "1. **owner/repo**" in result
+    assert "Source:" not in result
+
+
+def test_llm_client_summarize_markdown_strips_fence(monkeypatch):
+    captured: dict = {}
+    response_content = "```markdown\n# 标题\n\n1. 条目\n```"
+    _patch_openai(monkeypatch, response_content, captured)
+
+    client = llm_module.LLMClient(api_key="test-key")
+    result = client.summarize_markdown("raw markdown", "prompt", "zh-CN")
+
+    assert result == "# 标题\n\n1. 条目\n"

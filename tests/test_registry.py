@@ -7,6 +7,7 @@ def test_registry_match_urls():
     assert registry.match_url('https://github.com/trending').source_name == 'github_trending'
     assert registry.match_url('https://api.github.com/search/repositories').source_name == 'github_search'
     assert registry.match_url('https://example.com/feed.xml').source_name == 'rss_atom'
+    assert registry.match_url('https://rss.arxiv.org/rss/cs.AI').source_name == 'rss_atom'
 
 
 def test_registry_get_source_plugin():
