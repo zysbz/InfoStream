@@ -283,6 +283,22 @@ items/<source>__<title_sanitized>__<shortid>/
 uv run pytest -q --basetemp=./tmp_pytest
 ```
 
+## GitHub Actions + Pages (Daily Auto Update)
+
+This repo now supports a daily GitHub Actions run of `uv run main.py run`, then publishes `output/latest.html` as a GitHub Pages static site.
+
+One-time setup:
+
+1. Ensure the workflow file exists: `.github/workflows/daily-pages.yml`.
+2. In your GitHub repo, go to `Settings -> Pages`, and set `Build and deployment -> Source` to `GitHub Actions`.
+3. Optional: add `DASHSCOPE_API_KEY` in `Settings -> Secrets and variables -> Actions` (used for LLM summarization; if missing, deterministic fallback is used).
+
+Notes:
+
+- The workflow supports both manual trigger (`workflow_dispatch`) and daily schedule.
+- Current cron is `30 0 * * *` (00:30 UTC daily). Adjust it if you want a different local time.
+- During deployment, `output/latest.html` is copied to Pages `index.html` (and `latest.html` is also kept).
+
 ## Privacy and Security
 
 - Never commit `.env` or real tokens.

@@ -283,6 +283,22 @@ items/<source>__<title_sanitized>__<shortid>/
 uv run pytest -q --basetemp=./tmp_pytest
 ```
 
+## GitHub Actions + Pages（每日自动更新）
+
+仓库已支持通过 GitHub Actions 每日自动执行 `uv run main.py run`，并将 `output/latest.html` 部署为 GitHub Pages 静态页。
+
+一次性设置：
+
+1. 确保仓库包含工作流文件：`.github/workflows/daily-pages.yml`。
+2. 在 GitHub 仓库设置中打开 `Settings -> Pages`，`Build and deployment` 的 `Source` 选择 `GitHub Actions`。
+3. 可选：在 `Settings -> Secrets and variables -> Actions` 新增 `DASHSCOPE_API_KEY`（用于 LLM 摘要；未配置时会自动回退到确定性摘要）。
+
+说明：
+
+- 工作流支持手动触发（`workflow_dispatch`）和每日定时触发。
+- 当前 cron 是 `30 0 * * *`（UTC 每天 00:30）；如果你希望按本地时区运行，可直接修改该字段。
+- 部署时会把 `output/latest.html` 同步为 Pages 的 `index.html`（同时保留 `latest.html`）。
+
 ## Privacy and Security
 
 - 不要提交 `.env` 或真实密钥。
