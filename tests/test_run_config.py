@@ -1,4 +1,4 @@
-﻿import pytest
+import pytest
 from pydantic import ValidationError
 
 from infostream.config.models import RunConfig
@@ -45,6 +45,26 @@ def test_run_config_source_limits_rejects_over_50():
         RunConfig(source_limits={"github": 51})
 
 
+def test_run_config_source_name_limits_accepts_values():
+    cfg = RunConfig(source_name_limits={"RSS_AI_FEEDS": 12})
+    assert cfg.source_name_limits["rss_ai_feeds"] == 12
+
+
+def test_run_config_source_name_limits_rejects_over_200():
+    with pytest.raises(ValidationError):
+        RunConfig(source_name_limits={"rss_ai_feeds": 201})
+
+
+def test_run_config_source_url_limits_accepts_values():
+    cfg = RunConfig(source_url_limits={"https://huggingface.co/blog/feed.xml": 12})
+    assert cfg.source_url_limits["https://huggingface.co/blog/feed.xml"] == 12
+
+
+def test_run_config_source_url_limits_rejects_over_200():
+    with pytest.raises(ValidationError):
+        RunConfig(source_url_limits={"https://huggingface.co/blog/feed.xml": 201})
+
+
 def test_run_config_timezone_accepts_utc_plus_8():
     cfg = RunConfig(timezone="UTC+08:00")
     assert cfg.timezone == "UTC+08:00"
@@ -72,3 +92,26 @@ def test_run_config_github_trending_total_limit_accepts_20():
 def test_run_config_github_trending_total_limit_rejects_large_value():
     with pytest.raises(ValidationError):
         RunConfig(github_trending_total_limit=201)
+
+
+def test_run_config_default_freshness_window_is_one_week():
+    cfg = RunConfig()
+    assert cfg.freshness_window_hours == 168
+
+
+def test_run_config_rejects_overlapping_digest_status_sets():
+    with pytest.raises(ValidationError):
+        RunConfig(
+            digest_include_statuses=["new", "updated"],
+            digest_fallback_statuses=["updated", "reused"],
+        )
+
+
+def test_run_config_allows_empty_digest_fallback_statuses():
+    cfg = RunConfig(digest_include_statuses=["new", "updated"], digest_fallback_statuses=[])
+    assert cfg.digest_fallback_statuses == []
+
+
+def test_run_config_rejects_empty_digest_section_quota():
+    with pytest.raises(ValidationError):
+        RunConfig(digest_section_quota={"new": 0, "updated": 0, "reused": 0})

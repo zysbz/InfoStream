@@ -10,7 +10,7 @@ import time
 import webbrowser
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 from urllib.parse import parse_qsl, urlsplit
 
 import httpx
@@ -36,6 +36,10 @@ DEFAULT_WEB_SUMMARY_PROMPT = (
     "Keep facts grounded in the source and do not add external information. "
     "Do not include Source, URL, Local, or file paths in output."
 )
+DigestCandidateStatus = Literal["new", "updated", "unchanged", "reused"]
+DigestCandidate = tuple[Item, str, DigestCandidateStatus, bool]
+_DIGEST_CANDIDATE_MULTIPLIER = 3
+_DIGEST_CANDIDATE_CAP = 300
 
 
 def run_pipeline(
@@ -79,15 +83,29 @@ def run_pipeline(
         "reused_items": 0,
         "backfilled_items": 0,
         "failed_items": 0,
+        "selected_new": 0,
+        "selected_updated": 0,
+        "selected_reused": 0,
+        "dropped_by_freshness_window": 0,
+        "stale_backfilled": 0,
+        "promoted_unseen_cache_items": 0,
     }
-    digest_candidates: list[tuple[Item, str]] = []
+    digest_candidates: list[DigestCandidate] = []
     digest_item_ids: set[str] = set()
     source_group_counts: dict[str, int] = defaultdict(int)
     source_name_counts: dict[str, int] = defaultdict(int)
+    source_url_counts: dict[str, int] = defaultdict(int)
     trending_source_limits = _build_github_trending_source_limits(sources, run_config)
+    source_name_limits = _build_effective_source_name_limits(
+        configured_source_name_limits=run_config.source_name_limits,
+        trending_source_limits=trending_source_limits,
+    )
+    source_url_limits = {key: int(value) for key, value in run_config.source_url_limits.items()}
+    source_name_default_url_keys = _build_source_name_default_url_keys(sources)
     run_started_mono = time.monotonic()
     run_timed_out = False
     max_items_reached = False
+    digest_candidate_target_count = _digest_candidate_target(run_config.max_items)
 
     logger.info(
         "run_started",
@@ -97,7 +115,10 @@ def run_pipeline(
         timezone=run_config.timezone,
         date_key=date_key,
         max_items=run_config.max_items,
+        digest_candidate_target_count=digest_candidate_target_count,
         source_limits=run_config.source_limits,
+        source_name_limits=source_name_limits,
+        source_url_limits=source_url_limits,
         trending_source_limits=trending_source_limits,
     )
     _emit_progress(
@@ -106,7 +127,10 @@ def run_pipeline(
         run_id=run_id,
         sources_total=len(sources),
         max_items=run_config.max_items,
+        digest_candidate_target_count=digest_candidate_target_count,
         timezone=run_config.timezone,
+        source_name_limits=source_name_limits,
+        source_url_limits=source_url_limits,
         trending_source_limits=trending_source_limits,
     )
 
@@ -130,7 +154,7 @@ def run_pipeline(
 
                 source_group = _source_group(source.type)
                 source_limit = run_config.source_limits.get(source_group)
-                source_name_limit = trending_source_limits.get(source.name)
+                source_name_limit = source_name_limits.get(source.name.lower())
                 if _is_source_limit_reached(source_group_counts, source_group, source_limit):
                     logger.info(
                         "source_limit_skipped",
@@ -242,6 +266,26 @@ def run_pipeline(
                             cached_item = _load_cached_item(record)
                             if cached_item is None:
                                 continue
+                            source_url_key = _resolve_source_url_key_for_cached_item(
+                                item=cached_item,
+                                source_default_url_key=source_name_default_url_keys.get(source.name.lower(), ""),
+                            )
+                            source_url_limit = source_url_limits.get(source_url_key)
+                            if _is_source_limit_reached(source_url_counts, source_url_key, source_url_limit):
+                                logger.info(
+                                    "source_url_limit_reached",
+                                    source=source.name,
+                                    source_url=source_url_key,
+                                    source_url_limit=source_url_limit,
+                                )
+                                _emit_progress(
+                                    progress,
+                                    "source_skipped_source_url_limit",
+                                    source=source.name,
+                                    source_url=source_url_key,
+                                    source_url_limit=source_url_limit,
+                                )
+                                continue
 
                             write_result = writer.write_reused_item(
                                 cached_item,
@@ -255,17 +299,28 @@ def run_pipeline(
                             stats["items_success"] += 1
                             stats["reused_items"] += 1
                             stats["backfilled_items"] += 1
+                            promote_primary = _promote_unseen_cache_item_for_digest(
+                                catalog=catalog,
+                                item_id=cached_item.id,
+                                status="reused",
+                            )
 
                             if _append_digest_candidate(
                                 digest_candidates=digest_candidates,
                                 digest_item_ids=digest_item_ids,
                                 source_group_counts=source_group_counts,
                                 source_name_counts=source_name_counts,
+                                source_url_counts=source_url_counts,
                                 source_group=source_group,
                                 source_name=source.name,
+                                source_url_key=source_url_key,
                                 item=cached_item,
                                 local_path=write_result.item_dir_relative,
+                                status="reused",
+                                promote_primary=promote_primary,
                             ):
+                                if promote_primary:
+                                    stats["promoted_unseen_cache_items"] += 1
                                 _emit_progress(
                                     progress,
                                     "item_reused",
@@ -273,10 +328,19 @@ def run_pipeline(
                                     item_id=cached_item.id,
                                     candidates=len(digest_candidates),
                                 )
-                                if len(digest_candidates) >= run_config.max_items:
+                                if len(digest_candidates) >= digest_candidate_target_count:
                                     max_items_reached = True
-                                    logger.info("max_items_reached", max_items=run_config.max_items)
-                                    _emit_progress(progress, "max_items_reached", max_items=run_config.max_items)
+                                    logger.info(
+                                        "max_items_reached",
+                                        max_items=digest_candidate_target_count,
+                                        digest_max_items=run_config.max_items,
+                                    )
+                                    _emit_progress(
+                                        progress,
+                                        "max_items_reached",
+                                        max_items=digest_candidate_target_count,
+                                        digest_max_items=run_config.max_items,
+                                    )
                                     break
 
                         logger.info("source_finished", source=source.name, source_type=source.type)
@@ -358,6 +422,25 @@ def run_pipeline(
                     stats["items_processed"] += 1
                     provisional_item_id = _hash_text(entry.url)
                     normalized_entry_url = normalize_url(entry.url)
+                    source_url_key = _resolve_source_url_key_for_entry(source=source, entry=entry)
+                    source_url_limit = source_url_limits.get(source_url_key)
+                    if _is_source_limit_reached(source_url_counts, source_url_key, source_url_limit):
+                        logger.info(
+                            "source_url_limit_reached",
+                            source=source.name,
+                            source_url=source_url_key,
+                            source_url_limit=source_url_limit,
+                            entry=entry.url,
+                        )
+                        _emit_progress(
+                            progress,
+                            "source_skipped_source_url_limit",
+                            source=source.name,
+                            source_url=source_url_key,
+                            source_url_limit=source_url_limit,
+                            entry=entry.url,
+                        )
+                        continue
 
                     if run_config.reuse_same_day:
                         cache_record = catalog.get_daily_url_cache(date_key, normalized_entry_url)
@@ -376,21 +459,41 @@ def run_pipeline(
                                 catalog.record_run_item(run_id, cached_item.id, cached_item.version, "reused")
                                 stats["items_success"] += 1
                                 stats["reused_items"] += 1
+                                promote_primary = _promote_unseen_cache_item_for_digest(
+                                    catalog=catalog,
+                                    item_id=cached_item.id,
+                                    status="reused",
+                                )
 
                                 if _append_digest_candidate(
                                     digest_candidates=digest_candidates,
                                     digest_item_ids=digest_item_ids,
                                     source_group_counts=source_group_counts,
                                     source_name_counts=source_name_counts,
+                                    source_url_counts=source_url_counts,
                                     source_group=source_group,
                                     source_name=source.name,
+                                    source_url_key=source_url_key,
                                     item=cached_item,
                                     local_path=write_result.item_dir_relative,
+                                    status="reused",
+                                    promote_primary=promote_primary,
                                 ):
-                                    if len(digest_candidates) >= run_config.max_items:
+                                    if promote_primary:
+                                        stats["promoted_unseen_cache_items"] += 1
+                                    if len(digest_candidates) >= digest_candidate_target_count:
                                         max_items_reached = True
-                                        logger.info("max_items_reached", max_items=run_config.max_items)
-                                        _emit_progress(progress, "max_items_reached", max_items=run_config.max_items)
+                                        logger.info(
+                                            "max_items_reached",
+                                            max_items=digest_candidate_target_count,
+                                            digest_max_items=run_config.max_items,
+                                        )
+                                        _emit_progress(
+                                            progress,
+                                            "max_items_reached",
+                                            max_items=digest_candidate_target_count,
+                                            digest_max_items=run_config.max_items,
+                                        )
                                         break
                                     if _is_source_limit_reached(source_group_counts, source_group, source_limit):
                                         logger.info(
@@ -456,6 +559,7 @@ def run_pipeline(
                         item.version = decision.version
                         writer.rewrite_meta(item, write_result.item_json_path)
 
+                        status: DigestCandidateStatus
                         if decision.is_new_item:
                             status = "new"
                             stats["new_items"] += 1
@@ -468,6 +572,11 @@ def run_pipeline(
 
                         catalog.record_run_item(run_id, item.id, item.version, status)
                         stats["items_success"] += 1
+                        promote_primary = _promote_unseen_cache_item_for_digest(
+                            catalog=catalog,
+                            item_id=item.id,
+                            status=status,
+                        )
 
                         _record_daily_url_cache(
                             catalog=catalog,
@@ -499,15 +608,30 @@ def run_pipeline(
                             digest_item_ids=digest_item_ids,
                             source_group_counts=source_group_counts,
                             source_name_counts=source_name_counts,
+                            source_url_counts=source_url_counts,
                             source_group=source_group,
                             source_name=source.name,
+                            source_url_key=source_url_key,
                             item=item,
                             local_path=write_result.item_dir_relative,
+                            status=status,
+                            promote_primary=promote_primary,
                         ):
-                            if len(digest_candidates) >= run_config.max_items:
+                            if promote_primary:
+                                stats["promoted_unseen_cache_items"] += 1
+                            if len(digest_candidates) >= digest_candidate_target_count:
                                 max_items_reached = True
-                                logger.info("max_items_reached", max_items=run_config.max_items)
-                                _emit_progress(progress, "max_items_reached", max_items=run_config.max_items)
+                                logger.info(
+                                    "max_items_reached",
+                                    max_items=digest_candidate_target_count,
+                                    digest_max_items=run_config.max_items,
+                                )
+                                _emit_progress(
+                                    progress,
+                                    "max_items_reached",
+                                    max_items=digest_candidate_target_count,
+                                    digest_max_items=run_config.max_items,
+                                )
                                 break
                             if _is_source_limit_reached(source_group_counts, source_group, source_limit):
                                 logger.info(
@@ -570,7 +694,11 @@ def run_pipeline(
                 if run_timed_out or max_items_reached:
                     break
 
-        if not run_timed_out and run_config.backfill_from_same_day_cache and len(digest_candidates) < run_config.max_items:
+        if (
+            not run_timed_out
+            and run_config.backfill_from_same_day_cache
+            and len(digest_candidates) < digest_candidate_target_count
+        ):
             backfilled = _backfill_same_day_cache(
                 catalog=catalog,
                 writer=writer,
@@ -579,13 +707,17 @@ def run_pipeline(
                 run_id=run_id,
                 date_key=date_key,
                 digest_candidates=digest_candidates,
+                digest_candidate_target_count=digest_candidate_target_count,
                 digest_item_ids=digest_item_ids,
                 source_group_counts=source_group_counts,
                 source_name_counts=source_name_counts,
-                source_name_limits=trending_source_limits,
+                source_name_limits=source_name_limits,
+                source_url_counts=source_url_counts,
+                source_url_limits=source_url_limits,
+                source_name_default_url_keys=source_name_default_url_keys,
                 stats=stats,
             )
-            if backfilled > 0 and len(digest_candidates) >= run_config.max_items:
+            if backfilled > 0 and len(digest_candidates) >= digest_candidate_target_count:
                 max_items_reached = True
 
         _emit_progress(
@@ -595,6 +727,20 @@ def run_pipeline(
             max_items=run_config.max_items,
         )
         digest_md, digest_json = generate_digest(digest_candidates, run_config, llm_client)
+        digest_stats = digest_json.get("stats", {})
+        if isinstance(digest_stats, dict):
+            stats["selected_new"] = int(digest_stats.get("selected_new") or 0)
+            stats["selected_updated"] = int(digest_stats.get("selected_updated") or 0)
+            stats["selected_reused"] = int(digest_stats.get("selected_reused") or 0)
+            stats["dropped_by_freshness_window"] = int(digest_stats.get("dropped_by_freshness_window") or 0)
+            stats["stale_backfilled"] = int(digest_stats.get("stale_backfilled") or 0)
+        digest_item_ids_selected = _extract_digest_item_ids(digest_json)
+        if digest_item_ids_selected:
+            catalog.mark_digested_items(
+                run_id=run_id,
+                item_ids=digest_item_ids_selected,
+                digested_at=str(digest_json.get("generated_at") or datetime.now(run_tz).isoformat()),
+            )
         writer.write_digest(digest_md, digest_json)
         summary_md_path = ""
         fixed_web_html_path = ""
@@ -639,8 +785,12 @@ def run_pipeline(
             "timezone": run_config.timezone,
             "timed_out": run_timed_out,
             "max_items_reached": max_items_reached,
+            "digest_candidate_target_count": digest_candidate_target_count,
             "source_group_counts": dict(source_group_counts),
             "source_name_counts": dict(source_name_counts),
+            "source_url_counts": dict(source_url_counts),
+            "source_name_limits": source_name_limits,
+            "source_url_limits": source_url_limits,
             "trending_source_limits": trending_source_limits,
             "stats": stats,
             "rejected_add_urls": rejected_add_urls or [],
@@ -664,6 +814,7 @@ def run_pipeline(
             max_items_reached=max_items_reached,
             source_group_counts=dict(source_group_counts),
             source_name_counts=dict(source_name_counts),
+            source_url_counts=dict(source_url_counts),
             stats=stats,
         )
         _emit_progress(
@@ -688,16 +839,20 @@ def _backfill_same_day_cache(
     run_config: RunConfig,
     run_id: str,
     date_key: str,
-    digest_candidates: list[tuple[Item, str]],
+    digest_candidates: list[DigestCandidate],
+    digest_candidate_target_count: int,
     digest_item_ids: set[str],
     source_group_counts: dict[str, int],
     source_name_counts: dict[str, int],
     source_name_limits: dict[str, int],
+    source_url_counts: dict[str, int],
+    source_url_limits: dict[str, int],
+    source_name_default_url_keys: dict[str, str],
     stats: dict[str, Any],
 ) -> int:
     backfilled = 0
     for record in catalog.list_daily_cache(date_key):
-        if len(digest_candidates) >= run_config.max_items:
+        if len(digest_candidates) >= digest_candidate_target_count:
             break
         if record.item_id in digest_item_ids:
             continue
@@ -707,12 +862,19 @@ def _backfill_same_day_cache(
         if _is_source_limit_reached(source_group_counts, source_group, source_limit):
             continue
         source_name = record.source_name or record.source_type
-        source_name_limit = source_name_limits.get(source_name)
+        source_name_limit = source_name_limits.get(source_name.lower())
         if _is_source_limit_reached(source_name_counts, source_name, source_name_limit):
             continue
 
         item = _load_cached_item(record)
         if item is None:
+            continue
+        source_url_key = _resolve_source_url_key_for_cached_item(
+            item=item,
+            source_default_url_key=source_name_default_url_keys.get(source_name.lower(), ""),
+        )
+        source_url_limit = source_url_limits.get(source_url_key)
+        if _is_source_limit_reached(source_url_counts, source_url_key, source_url_limit):
             continue
 
         write_result = writer.write_reused_item(
@@ -728,17 +890,28 @@ def _backfill_same_day_cache(
         stats["reused_items"] += 1
         stats["backfilled_items"] += 1
         backfilled += 1
+        promote_primary = _promote_unseen_cache_item_for_digest(
+            catalog=catalog,
+            item_id=item.id,
+            status="reused",
+        )
 
         _append_digest_candidate(
             digest_candidates=digest_candidates,
             digest_item_ids=digest_item_ids,
             source_group_counts=source_group_counts,
             source_name_counts=source_name_counts,
+            source_url_counts=source_url_counts,
             source_group=source_group,
             source_name=source_name,
+            source_url_key=source_url_key,
             item=item,
             local_path=write_result.item_dir_relative,
+            status="reused",
+            promote_primary=promote_primary,
         )
+        if promote_primary:
+            stats["promoted_unseen_cache_items"] += 1
         logger.info(
             "same_day_backfill_hit",
             item_id=item.id,
@@ -764,22 +937,39 @@ def _load_cached_item(record: DailyCacheRecord) -> Item | None:
 
 def _append_digest_candidate(
     *,
-    digest_candidates: list[tuple[Item, str]],
+    digest_candidates: list[DigestCandidate],
     digest_item_ids: set[str],
     source_group_counts: dict[str, int],
     source_name_counts: dict[str, int],
+    source_url_counts: dict[str, int],
     source_group: str,
     source_name: str,
+    source_url_key: str,
     item: Item,
     local_path: str,
+    status: DigestCandidateStatus,
+    promote_primary: bool = False,
 ) -> bool:
     if item.id in digest_item_ids:
         return False
     digest_item_ids.add(item.id)
-    digest_candidates.append((item, local_path))
+    digest_candidates.append((item, local_path, status, promote_primary))
     source_group_counts[source_group] += 1
     source_name_counts[source_name] += 1
+    if source_url_key:
+        source_url_counts[source_url_key] += 1
     return True
+
+
+def _promote_unseen_cache_item_for_digest(
+    *,
+    catalog: CatalogSQLite,
+    item_id: str,
+    status: DigestCandidateStatus,
+) -> bool:
+    if status not in {"reused", "unchanged"}:
+        return False
+    return not catalog.has_digested_item(item_id)
 
 
 def _record_daily_url_cache(
@@ -894,6 +1084,104 @@ def _resolve_blocked_until(exc: Exception, now_utc: datetime) -> datetime:
             except ValueError:
                 pass
     return now_utc + timedelta(minutes=15)
+
+
+def _build_effective_source_name_limits(
+    *,
+    configured_source_name_limits: dict[str, int],
+    trending_source_limits: dict[str, int],
+) -> dict[str, int]:
+    limits: dict[str, int] = {}
+    for name, limit in configured_source_name_limits.items():
+        key = str(name).strip().lower()
+        if not key:
+            continue
+        limits[key] = int(limit)
+
+    for name, limit in trending_source_limits.items():
+        key = str(name).strip().lower()
+        if not key:
+            continue
+        if key in limits:
+            limits[key] = min(limits[key], int(limit))
+        else:
+            limits[key] = int(limit)
+
+    return limits
+
+
+def _build_source_name_default_url_keys(sources: list[SourceConfig]) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for source in sources:
+        key = str(source.name).strip().lower()
+        if not key:
+            continue
+        default_url_key = _primary_source_url_key(source)
+        if not default_url_key:
+            continue
+        result[key] = default_url_key
+    return result
+
+
+def _primary_source_url_key(source: SourceConfig) -> str:
+    source_url_keys = _source_url_keys(source)
+    if len(source_url_keys) != 1:
+        return ""
+    return source_url_keys[0]
+
+
+def _resolve_source_url_key_for_entry(*, source: SourceConfig, entry: Entry) -> str:
+    source_url_keys = _source_url_keys(source)
+    source_url_key_set = set(source_url_keys)
+
+    if isinstance(entry.metadata, dict):
+        for key in ("feed_url", "entry_feed_url", "discover_url", "source_url"):
+            value = entry.metadata.get(key)
+            if not isinstance(value, str):
+                continue
+            normalized = normalize_url(value)
+            if not normalized:
+                continue
+            if not source_url_key_set or normalized in source_url_key_set:
+                return normalized
+
+    normalized_entry_url = normalize_url(entry.url)
+    if normalized_entry_url and (not source_url_key_set or normalized_entry_url in source_url_key_set):
+        return normalized_entry_url
+
+    default_url_key = _primary_source_url_key(source)
+    if default_url_key:
+        return default_url_key
+
+    return ""
+
+
+def _resolve_source_url_key_for_cached_item(*, item: Item, source_default_url_key: str) -> str:
+    request_context = item.evidence.request_context
+    if isinstance(request_context, dict):
+        for key in ("feed_url", "entry_feed_url", "discover_url", "source_url"):
+            value = request_context.get(key)
+            if isinstance(value, str):
+                normalized = normalize_url(value)
+                if normalized:
+                    return normalized
+
+    if source_default_url_key:
+        return source_default_url_key
+
+    return normalize_url(item.source_url)
+
+
+def _source_url_keys(source: SourceConfig) -> list[str]:
+    keys: list[str] = []
+    seen: set[str] = set()
+    for url in source.entry_urls:
+        normalized = normalize_url(str(url))
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        keys.append(normalized)
+    return keys
 
 
 def _build_github_trending_source_limits(sources: list[SourceConfig], run_config: RunConfig) -> dict[str, int]:
@@ -1300,6 +1588,23 @@ def _render_summary_html(summary_md: str) -> str:
         )
 
 
+def _extract_digest_item_ids(payload: dict[str, Any]) -> list[str]:
+    raw_items = payload.get("items")
+    if not isinstance(raw_items, list):
+        return []
+    result: list[str] = []
+    seen: set[str] = set()
+    for row in raw_items:
+        if not isinstance(row, dict):
+            continue
+        item_id = str(row.get("item_id") or "").strip()
+        if not item_id or item_id in seen:
+            continue
+        seen.add(item_id)
+        result.append(item_id)
+    return result
+
+
 def _emit_progress(
     progress: Callable[[str, dict[str, Any]], None] | None,
     event: str,
@@ -1355,4 +1660,9 @@ def _source_group(source_type: str) -> str:
 
 def _is_source_limit_reached(source_group_counts: dict[str, int], source_group: str, source_limit: int | None) -> bool:
     return source_limit is not None and source_group_counts[source_group] >= source_limit
+
+
+def _digest_candidate_target(max_items: int) -> int:
+    expanded = max_items * _DIGEST_CANDIDATE_MULTIPLIER
+    return max(max_items, min(expanded, _DIGEST_CANDIDATE_CAP))
 

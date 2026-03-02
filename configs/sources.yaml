@@ -61,7 +61,12 @@ sources:
     enabled: true
     entry_urls:
       - https://openai.com/news/rss.xml
+      - https://www.deepmind.com/blog/rss.xml
+      - https://blog.google/technology/ai/rss
       - https://huggingface.co/blog/feed.xml
+      - https://rss.arxiv.org/rss/cs.AI
+      - https://rss.arxiv.org/rss/cs.CL
+      - https://blogs.microsoft.com/ai/feed/
     discover_depth: 1
     since: null
     timeout_sec: 180

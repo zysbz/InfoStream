@@ -65,6 +65,7 @@ class GitHubTrendingPlugin(SourcePlugin):
                             source_name=self.source_name,
                             metadata={
                                 "from": "trending_html",
+                                "discover_url": entry_url,
                                 "github_token": token,
                                 "trending_since": trending_since,
                                 "spoken_language_code": spoken_language_code,
@@ -107,6 +108,7 @@ class GitHubTrendingPlugin(SourcePlugin):
                         source_name=self.source_name,
                         metadata={
                             "repo": record,
+                            "discover_url": entry_url,
                             "status_code": response.status_code,
                             "headers": dict(response.headers),
                             "github_token": token,
@@ -126,7 +128,10 @@ class GitHubTrendingPlugin(SourcePlugin):
                 status_code=entry.metadata.get("status_code"),
                 headers=entry.metadata.get("headers", {}),
                 final_url=entry.url,
-                metadata={"from": entry.metadata.get("from", "trending_api")},
+                metadata={
+                    "from": entry.metadata.get("from", "trending_api"),
+                    "discover_url": entry.metadata.get("discover_url"),
+                },
             )
 
         match = _REPO_URL.match(entry.url)
@@ -159,7 +164,10 @@ class GitHubTrendingPlugin(SourcePlugin):
             status_code=response.status_code,
             headers=dict(response.headers),
             final_url=str(response.url),
-            metadata={"from": "direct_html"},
+            metadata={
+                "from": "direct_html",
+                "discover_url": entry.metadata.get("discover_url"),
+            },
         )
 
     def extract(self, raw: RawPayload) -> ItemDraft:
@@ -211,16 +219,20 @@ class GitHubTrendingPlugin(SourcePlugin):
         return hashlib.sha1(item.source_url.encode("utf-8")).hexdigest()
 
     def provenance(self, raw: RawPayload, item: ItemDraft, content_hash: str, raw_hash: str) -> Evidence:
+        request_context: dict[str, Any] = {
+            "status_code": raw.status_code,
+            "headers": raw.headers,
+            "final_url": raw.final_url,
+        }
+        discover_url = raw.metadata.get("discover_url")
+        if isinstance(discover_url, str):
+            request_context["discover_url"] = discover_url
         return Evidence(
             source_url=item.source_url,
             fetched_at=raw.fetched_at,
             content_hash=content_hash,
             raw_hash=raw_hash,
-            request_context={
-                "status_code": raw.status_code,
-                "headers": raw.headers,
-                "final_url": raw.final_url,
-            },
+            request_context=request_context,
             extract_hints={"plugin": self.source_name, "from": raw.metadata.get("from")},
         )
 

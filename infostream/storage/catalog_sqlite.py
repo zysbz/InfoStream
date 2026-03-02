@@ -105,6 +105,14 @@ class CatalogSQLite:
                 reason TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS digested_items (
+                item_id TEXT PRIMARY KEY,
+                first_digested_at TEXT NOT NULL,
+                last_digested_at TEXT NOT NULL,
+                digest_count INTEGER NOT NULL DEFAULT 1,
+                last_run_id TEXT NOT NULL
+            );
             """
         )
         self._ensure_column("daily_url_cache", "source_name", "TEXT NOT NULL DEFAULT ''")
@@ -424,6 +432,35 @@ class CatalogSQLite:
             reason=str(row["reason"]),
             updated_at=str(row["updated_at"]),
         )
+
+    def has_digested_item(self, item_id: str) -> bool:
+        row = self.conn.execute("SELECT 1 FROM digested_items WHERE item_id = ? LIMIT 1", (item_id,)).fetchone()
+        return row is not None
+
+    def mark_digested_items(self, *, run_id: str, item_ids: list[str], digested_at: str) -> None:
+        ordered_unique_ids: list[str] = []
+        seen: set[str] = set()
+        for item_id in item_ids:
+            normalized = str(item_id).strip()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            ordered_unique_ids.append(normalized)
+        if not ordered_unique_ids:
+            return
+
+        self.conn.executemany(
+            """
+            INSERT INTO digested_items (item_id, first_digested_at, last_digested_at, digest_count, last_run_id)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(item_id) DO UPDATE SET
+                last_digested_at = excluded.last_digested_at,
+                digest_count = digested_items.digest_count + 1,
+                last_run_id = excluded.last_run_id
+            """,
+            [(item_id, digested_at, digested_at, 1, run_id) for item_id in ordered_unique_ids],
+        )
+        self.conn.commit()
 
     def close(self) -> None:
         self.conn.close()

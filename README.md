@@ -139,11 +139,85 @@ uv run main.py run --sources configs/sources.yaml --run-config configs/run_confi
   - 转写策略
   - GitHub 搜索关键词
 - `configs/run_config.json`
-  - 运行策略（`max_items`、`llm_model`、`source_limits`、`timezone`、复用/回填开关、摘要偏好）
+  - 运行策略（`max_items`、`llm_model`、`source_limits`、`source_name_limits`、`source_url_limits`、`timezone`、复用/回填开关、摘要偏好）
+  - 摘要偏好重点字段：`digest_include_statuses`、`digest_fallback_statuses`、`digest_section_quota`、`freshness_window_hours`、`show_reused_section`
   - `llm_model` 可选模型字段，默认 `deepseek-v3.2`（示例：`qwen3.5-397b-a17b`）
   - `max_items` 范围：`1-200`（模型默认 `10`）
 - `configs/timeouts.yaml`
   - 请求、来源、全局运行超时
+
+来源配额与覆盖说明（`run_config.json`）：
+
+- `source_limits`
+  - 按来源组限额（如 `github`、`rss_atom`）。
+- `source_name_limits`
+  - 按来源名限额（例如 `github_search_ai`、`rss_ai_feeds`），用于防止单一来源吃满候选池。
+  - 键名大小写不敏感，内部统一转为小写。
+  - 示例：
+    - `"source_name_limits": {"github_search_ai": 8, "rss_ai_feeds": 12}`
+- `source_url_limits`（必填，按 entry_url 单独配额）
+  - 每个启用来源的每个 `entry_url` 都必须配置额度；缺失会在 `validate-config` 和 `run` 阶段直接报错。
+  - 这是你要求的“同组内 URL 也要单独限额”。例如 `rss_ai_feeds` 下的 `huggingface` 与 `deepmind` 需分别配置。
+  - 示例：
+    - `"source_url_limits": {"https://huggingface.co/blog/feed.xml": 6, "https://www.deepmind.com/blog/rss.xml": 4}`
+- 与 `github_trending_total_limit` 的关系
+  - 对 `github_trending_*` 来源会自动分配来源名限额。
+  - 若同一来源同时命中 `source_name_limits` 和自动分配限额，取更严格（更小）的值。
+- 是否保证“每个来源都一定有结果”
+  - 不保证。来源可能因无新条目、超时、限流冷却、抓取失败而产出 0。
+  - 但系统会按配置顺序尝试所有可用来源，并在候选计数中记录每个来源实际贡献。
+- RSS 新旧顺序
+  - `rss_atom` 在 discover 阶段会按发布时间降序排序，优先处理最新条目（不再依赖 feed 原始返回顺序）。
+
+摘要偏好参数说明（`run_config.json`）：
+
+- `digest_include_statuses`
+  - 主选池状态列表，优先从这些状态里选摘要条目。
+  - 常见值：`new`（新增）、`updated`（更新）。
+- `digest_fallback_statuses`
+  - 回补状态列表；当主选池不足时，按该列表回补。
+  - 常见值：`reused`（复用）、`unchanged`（未变化）。
+  - 注意：不能与 `digest_include_statuses` 重叠。
+  - 可设为空数组 `[]`（表示不做回补，仅依赖主选池与陈旧候选补位）。
+- `digest_section_quota`
+  - 各分区目标配比（不是硬上限），最终会按 `max_items` 计算到各分区目标数。
+  - 例如 `{"new": 50, "updated": 30, "reused": 20}`，当 `max_items=30` 时目标约为 `15/9/6`。
+
+示例（平衡“新内容优先 + 不足回补”）：
+
+```json
+{
+  "max_items": 30,
+  "digest_include_statuses": ["new", "updated"],
+  "digest_fallback_statuses": ["reused", "unchanged"],
+  "digest_section_quota": {
+    "new": 50,
+    "updated": 30,
+    "reused": 20
+  }
+}
+```
+
+状态判别标准（用于 `digest_include_statuses` / `digest_fallback_statuses`）：
+
+- `new`
+  - 条件：`item_id` 首次出现（`items` 表中不存在该 id）。
+  - 结果：写入首个版本（`v1`）。
+- `updated`
+  - 条件：`item_id` 已存在，但与最新版本相比，`text_hash` 或 `meta_hash` 至少一个发生变化。
+  - 结果：版本号递增（如 `v2`、`v3`）。
+- `unchanged`
+  - 条件：`item_id` 已存在，且 `text_hash` 与 `meta_hash` 都未变化。
+  - 结果：复用当前最新版本号，不新增版本。
+- `reused`
+  - 条件：命中同日缓存（按归一化 URL 或同日来源缓存）直接复用历史条目，不重新抓取。
+  - 结果：进入复用路径，摘要分区归类为 `reused`。
+
+补充说明：
+
+- `item_id` 由各插件的 `fingerprint` 规则生成（不是 URL 直接等值判断）。
+- 摘要层将 `unchanged` 与 `reused` 都归入 `reused` 分区展示。
+- 若条目从未进入过任何历史 `digest`，即使本次命中 `reused/unchanged`，摘要选择阶段也会提升其优先级（避免因中断运行导致有价值条目长期被压低）。
 
 常用运行时覆盖：
 

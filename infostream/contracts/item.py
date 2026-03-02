@@ -75,3 +75,7 @@ class DigestItem(BaseModel):
     tags: list[str] = Field(default_factory=list)
     source_url: str
     local_path: str
+    status: Literal["new", "updated", "unchanged", "reused"] = "new"
+    section: Literal["new", "updated", "reused"] = "new"
+    published_at: datetime | None = None
+    fetched_at: datetime | None = None

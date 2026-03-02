@@ -7,9 +7,10 @@ from datetime import datetime
 from pathlib import Path
 
 from infostream.config.loader import load_run_config, load_sources_config, load_timeouts_config, merge_add_urls
-from infostream.config.models import RunConfig
+from infostream.config.models import RunConfig, SourceConfig
 from infostream.pipeline.orchestrator import run_pipeline
 from infostream.plugins.registry import build_default_registry
+from infostream.utils.url_norm import normalize_url
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -43,6 +44,7 @@ def _run(args: argparse.Namespace) -> int:
 
     merged_sources, rejected_add_urls = merge_add_urls(sources_config, args.add_url or [], registry)
     _validate_sources_with_registry(merged_sources, registry)
+    _validate_source_url_limits(merged_sources, run_config)
 
     progress = None if args.no_progress else _build_progress_printer()
 
@@ -66,6 +68,9 @@ def _run(args: argparse.Namespace) -> int:
                 "max_items_reached": run_meta["max_items_reached"],
                 "source_group_counts": run_meta.get("source_group_counts", {}),
                 "source_name_counts": run_meta.get("source_name_counts", {}),
+                "source_url_counts": run_meta.get("source_url_counts", {}),
+                "source_name_limits": run_meta.get("source_name_limits", {}),
+                "source_url_limits": run_meta.get("source_url_limits", {}),
                 "trending_source_limits": run_meta.get("trending_source_limits", {}),
                 "stats": run_meta["stats"],
                 "output_dir": run_meta["paths"]["run_dir"],
@@ -88,8 +93,9 @@ def _validate_config(sources_path: str, run_config_path: str | None) -> int:
     try:
         registry = build_default_registry()
         sources_config = load_sources_config(sources_path)
-        _ = load_run_config(run_config_path)
+        run_config = load_run_config(run_config_path)
         _validate_sources_with_registry(sources_config.sources, registry)
+        _validate_source_url_limits(sources_config.sources, run_config)
     except Exception as exc:
         print(f"config validation failed: {exc}")
         return 2
@@ -112,6 +118,31 @@ def _validate_sources_with_registry(sources, registry) -> None:
                 raise ValueError(
                     f"source '{source.name}' URL '{url}' matches '{matched.source_name}', not declared '{source.type}'"
                 )
+
+
+def _validate_source_url_limits(sources: list[SourceConfig], run_config: RunConfig) -> None:
+    required: dict[str, list[str]] = {}
+    for source in sources:
+        if not source.enabled:
+            continue
+        for url in source.entry_urls:
+            normalized = normalize_url(url)
+            if not normalized:
+                continue
+            required.setdefault(normalized, []).append(f"{source.name}: {url}")
+
+    if not required:
+        return
+
+    configured = run_config.source_url_limits
+    missing = [required[key][0] for key in sorted(required.keys()) if key not in configured]
+    if missing:
+        preview = ", ".join(missing[:5])
+        more = "" if len(missing) <= 5 else f" ... (+{len(missing) - 5} more)"
+        raise ValueError(
+            "missing source_url_limits for entry_urls; each source URL must define a quota. "
+            f"missing={preview}{more}"
+        )
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -177,6 +208,12 @@ def _build_progress_printer():
             return
         if event == "source_skipped_source_name_limit":
             print(f"[{ts}] source_skipped_name_limit {payload.get('source')} limit={payload.get('source_name_limit')}")
+            return
+        if event == "source_skipped_source_url_limit":
+            print(
+                f"[{ts}] source_skipped_url_limit {payload.get('source')} "
+                f"url={payload.get('source_url')} limit={payload.get('source_url_limit')}"
+            )
             return
         if event == "source_finished":
             print(f"[{ts}] source_finished {payload.get('source')} candidates={payload.get('candidates')}")

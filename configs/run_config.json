@@ -1,20 +1,40 @@
 ﻿{
-  "max_items": 50,
+  "max_items": 101,
   "prompt_template": "请用中文输出结构化摘要，严格返回 one_liner、bullets(3条)、why_it_matters。",
   "focus_tags": [],
   "keywords": ["llm", "rag", "agent", "inference", "serving"],
   "priority_strategy": "github_hot_then_paper_blog_video",
   "language": "zh-CN",
   "source_limits": {
-    "github": 22,
+    "github": 31,
     "bilibili": 5
+  },
+  "source_url_limits": {
+    "https://github.com/trending": 21,
+    "https://api.github.com/search/repositories": 10,
+    "https://openai.com/news/rss.xml": 10,
+    "https://www.deepmind.com/blog/rss.xml": 10,
+    "https://blog.google/technology/ai/rss": 10,
+    "https://huggingface.co/blog/feed.xml": 10,
+    "https://rss.arxiv.org/rss/cs.AI": 10,
+    "https://rss.arxiv.org/rss/cs.CL": 10,
+    "https://blogs.microsoft.com/ai/feed/": 10
   },
   "github_trending_total_limit": 21,
   "llm_model": "qwen3.5-397b-a17b",
   "timezone": "UTC+08:00",
   "reuse_same_day": true,
   "backfill_from_same_day_cache": true,
-  "skip_discover_if_cached_same_day": true,
+  "skip_discover_if_cached_same_day": false,
   "reuse_materialize_mode": "reference",
-  "rate_limit_break_on_403": true
+  "rate_limit_break_on_403": true,
+  "digest_include_statuses": ["new", "updated"],
+  "digest_fallback_statuses": ["reused", "unchanged"],
+  "digest_section_quota": {
+    "new": 50,
+    "updated": 30,
+    "reused": 20
+  },
+  "freshness_window_hours": 168,
+  "show_reused_section": true
 }

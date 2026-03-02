@@ -32,6 +32,9 @@ class GitHubSearchPlugin(SourcePlugin):
             headers["Authorization"] = f"Bearer {token}"
 
         entries: list[Entry] = []
+        discover_url = (
+            str(source_config.entry_urls[0]) if source_config.entry_urls else "https://api.github.com/search/repositories"
+        )
         for keyword in keywords:
             response = client.get(
                 "https://api.github.com/search/repositories",
@@ -52,6 +55,7 @@ class GitHubSearchPlugin(SourcePlugin):
                         metadata={
                             "repo": repo,
                             "keyword": keyword,
+                            "discover_url": discover_url,
                             "status_code": response.status_code,
                             "headers": dict(response.headers),
                         },
@@ -70,7 +74,10 @@ class GitHubSearchPlugin(SourcePlugin):
                 status_code=entry.metadata.get("status_code"),
                 headers=entry.metadata.get("headers", {}),
                 final_url=entry.url,
-                metadata={"keyword": entry.metadata.get("keyword")},
+                metadata={
+                    "keyword": entry.metadata.get("keyword"),
+                    "discover_url": entry.metadata.get("discover_url"),
+                },
             )
 
         response = client.get(entry.url, timeout=request_timeout_sec)
@@ -132,6 +139,9 @@ class GitHubSearchPlugin(SourcePlugin):
             "headers": raw.headers,
             "final_url": raw.final_url,
         }
+        discover_url = raw.metadata.get("discover_url")
+        if isinstance(discover_url, str):
+            request_context["discover_url"] = discover_url
         return Evidence(
             source_url=item.source_url,
             fetched_at=raw.fetched_at,

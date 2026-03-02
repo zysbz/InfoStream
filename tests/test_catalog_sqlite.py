@@ -97,3 +97,34 @@ def test_catalog_daily_cache_and_cooldown(tmp_path):
     assert cooldown.reason == "github_403_rate_limit"
 
     catalog.close()
+
+
+def test_catalog_tracks_digested_items(tmp_path):
+    catalog = CatalogSQLite(tmp_path / "catalog.db")
+
+    assert catalog.has_digested_item("owner/repo") is False
+
+    catalog.mark_digested_items(
+        run_id="20260224_2032",
+        item_ids=["owner/repo", "owner/repo", "owner/repo2"],
+        digested_at="2026-02-24T20:32:33+08:00",
+    )
+
+    assert catalog.has_digested_item("owner/repo") is True
+    assert catalog.has_digested_item("owner/repo2") is True
+
+    catalog.mark_digested_items(
+        run_id="20260224_2132",
+        item_ids=["owner/repo"],
+        digested_at="2026-02-24T21:32:33+08:00",
+    )
+
+    row = catalog.conn.execute(
+        "SELECT digest_count, last_run_id FROM digested_items WHERE item_id = ?",
+        ("owner/repo",),
+    ).fetchone()
+    assert row is not None
+    assert int(row["digest_count"]) == 2
+    assert str(row["last_run_id"]) == "20260224_2132"
+
+    catalog.close()

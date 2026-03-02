@@ -139,11 +139,85 @@ Primary config files:
   - transcribe policy
   - GitHub search keywords
 - `configs/run_config.json`
-  - runtime policy (`max_items`, `llm_model`, `source_limits`, `timezone`, reuse/backfill switches, digest preferences)
+  - runtime policy (`max_items`, `llm_model`, `source_limits`, `source_name_limits`, `source_url_limits`, `timezone`, reuse/backfill switches, digest preferences)
+  - digest preference keys: `digest_include_statuses`, `digest_fallback_statuses`, `digest_section_quota`, `freshness_window_hours`, `show_reused_section`
   - `llm_model` optional model selector. Default: `deepseek-v3.2` (example: `qwen3.5-397b-a17b`)
   - `max_items` range: `1-200` (model default is `10`)
 - `configs/timeouts.yaml`
   - request/source/run timeouts
+
+Source quota and coverage notes (`run_config.json`):
+
+- `source_limits`
+  - Per source-group cap (for example `github`, `rss_atom`).
+- `source_name_limits`
+  - Per source-name cap (for example `github_search_ai`, `rss_ai_feeds`) to prevent a single source from dominating the candidate pool.
+  - Keys are case-insensitive and normalized to lowercase.
+  - Example:
+    - `"source_name_limits": {"github_search_ai": 8, "rss_ai_feeds": 12}`
+- `source_url_limits` (required, per-entry_url quota)
+  - Every `entry_url` of every enabled source must define a quota. Missing keys fail fast in both `validate-config` and `run`.
+  - This enforces separate quotas inside the same source group. For example, `huggingface` and `deepmind` feeds under `rss_ai_feeds` must be configured independently.
+  - Example:
+    - `"source_url_limits": {"https://huggingface.co/blog/feed.xml": 6, "https://www.deepmind.com/blog/rss.xml": 4}`
+- Interaction with `github_trending_total_limit`
+  - `github_trending_*` sources still receive auto-distributed per-source-name caps.
+  - If both `source_name_limits` and auto-distributed cap apply to the same source, the stricter (smaller) one wins.
+- Is every source guaranteed to contribute
+  - No. A source may yield zero due to no new entries, timeout, cooldown/rate-limit, or fetch errors.
+  - The pipeline still attempts all enabled sources in order and records actual per-source contribution in run metadata.
+- RSS recency order
+  - `rss_atom` now sorts discovered feed entries by publish time descending, so newer entries are processed first instead of relying on feed order.
+
+Digest preference parameters (`run_config.json`):
+
+- `digest_include_statuses`
+  - Primary status pool; digest selection prioritizes these statuses first.
+  - Typical values: `new`, `updated`.
+- `digest_fallback_statuses`
+  - Fallback status pool used when primary pool is insufficient.
+  - Typical values: `reused`, `unchanged`.
+  - Note: it must not overlap with `digest_include_statuses`.
+  - It can be an empty array `[]` (no fallback; rely on primary pool plus stale backfill).
+- `digest_section_quota`
+  - Target section ratio (not a hard cap). It is converted into section targets based on `max_items`.
+  - Example: `{"new": 50, "updated": 30, "reused": 20}` with `max_items=30` yields approx `15/9/6`.
+
+Example ("prefer fresh, then backfill"):
+
+```json
+{
+  "max_items": 30,
+  "digest_include_statuses": ["new", "updated"],
+  "digest_fallback_statuses": ["reused", "unchanged"],
+  "digest_section_quota": {
+    "new": 50,
+    "updated": 30,
+    "reused": 20
+  }
+}
+```
+
+Status criteria (used by `digest_include_statuses` / `digest_fallback_statuses`):
+
+- `new`
+  - Condition: `item_id` appears for the first time (no existing row in `items`).
+  - Result: first version is stored (`v1`).
+- `updated`
+  - Condition: `item_id` already exists, and at least one of `text_hash` or `meta_hash` differs from the latest version.
+  - Result: version is incremented (for example `v2`, `v3`).
+- `unchanged`
+  - Condition: `item_id` already exists, and both `text_hash` and `meta_hash` are unchanged.
+  - Result: current latest version is reused; no new version row is created.
+- `reused`
+  - Condition: same-day cache hit (normalized URL cache or same-day source cache), so the item is reused without fresh fetch.
+  - Result: item enters reuse path and is shown in the `reused` digest section.
+
+Notes:
+
+- `item_id` is produced by each plugin's `fingerprint` logic (not a raw URL equality check).
+- In digest rendering, both `unchanged` and `reused` are grouped into the `reused` section.
+- If an item has never appeared in any historical `digest`, it gets boosted during selection even when current run status is `reused/unchanged` (to avoid losing value after interrupted runs).
 
 Useful runtime overrides:
 

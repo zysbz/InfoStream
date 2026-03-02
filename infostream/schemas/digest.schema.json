@@ -35,10 +35,50 @@
             "items": { "type": "string" }
           },
           "source_url": { "type": "string" },
-          "local_path": { "type": "string" }
+          "local_path": { "type": "string" },
+          "status": { "type": "string", "enum": ["new", "updated", "unchanged", "reused"] },
+          "section": { "type": "string", "enum": ["new", "updated", "reused"] },
+          "published_at": { "type": ["string", "null"], "format": "date-time" },
+          "fetched_at": { "type": ["string", "null"], "format": "date-time" }
         },
         "additionalProperties": true
       }
+    },
+    "sections": {
+      "type": "object",
+      "properties": {
+        "new": { "type": "integer", "minimum": 0 },
+        "updated": { "type": "integer", "minimum": 0 },
+        "reused": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": true
+    },
+    "selection": {
+      "type": "object",
+      "properties": {
+        "include_statuses": { "type": "array", "items": { "type": "string" } },
+        "fallback_statuses": { "type": "array", "items": { "type": "string" } },
+        "section_limits": { "type": "object", "additionalProperties": { "type": "integer" } },
+        "freshness_window_hours": { "type": "integer", "minimum": 1 },
+        "show_reused_section": { "type": "boolean" }
+      },
+      "additionalProperties": true
+    },
+    "stats": {
+      "type": "object",
+      "properties": {
+        "candidates_total": { "type": "integer", "minimum": 0 },
+        "candidates_after_freshness": { "type": "integer", "minimum": 0 },
+        "candidates_after_dedup": { "type": "integer", "minimum": 0 },
+        "dropped_by_freshness_window": { "type": "integer", "minimum": 0 },
+        "stale_backfilled": { "type": "integer", "minimum": 0 },
+        "selected_total": { "type": "integer", "minimum": 0 },
+        "selected_new": { "type": "integer", "minimum": 0 },
+        "selected_updated": { "type": "integer", "minimum": 0 },
+        "selected_reused": { "type": "integer", "minimum": 0 },
+        "selected_unchanged": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": true
     }
   },
   "additionalProperties": true

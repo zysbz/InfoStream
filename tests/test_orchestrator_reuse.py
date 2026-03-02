@@ -6,8 +6,16 @@ from infostream.config.models import RunConfig, SourceConfig, TimeoutsConfig, Tr
 from infostream.contracts.item import Entry, Evidence, ItemDraft, RawPayload
 from infostream.contracts.plugin import PluginCapabilities, SourcePlugin
 from infostream.pipeline import orchestrator as orchestrator_module
-from infostream.pipeline.orchestrator import _normalize_summary_markdown, run_pipeline
+from infostream.pipeline.orchestrator import (
+    _digest_candidate_target,
+    _normalize_summary_markdown,
+    _promote_unseen_cache_item_for_digest,
+    _resolve_source_url_key_for_entry,
+    run_pipeline,
+)
+from infostream.utils.url_norm import normalize_url
 from infostream.plugins.registry import PluginRegistry
+from infostream.storage.catalog_sqlite import CatalogSQLite
 
 
 class FakeSourcePlugin(SourcePlugin):
@@ -279,3 +287,65 @@ def test_normalize_summary_markdown_splits_numbered_section_lines():
     assert "## 一、模型发布与技术升级" in normalized
     assert "## 二、企业应用案例" in normalized
     assert "## 一、今日要点" not in normalized
+
+
+def test_digest_candidate_target_expands_pool():
+    assert _digest_candidate_target(30) == 90
+    assert _digest_candidate_target(1) == 3
+    assert _digest_candidate_target(200) == 300
+
+
+def test_resolve_source_url_key_uses_discover_url_for_multi_entry_source():
+    source = SourceConfig(
+        name="gh_multi",
+        type="github_trending",
+        entry_urls=[
+            "https://github.com/trending?since=weekly",
+            "https://github.com/trending?since=daily",
+        ],
+    )
+    entry = Entry(
+        url="https://github.com/owner/repo",
+        source_name="github_trending",
+        metadata={"discover_url": "https://github.com/trending?since=daily"},
+    )
+
+    resolved = _resolve_source_url_key_for_entry(source=source, entry=entry)
+
+    assert resolved == normalize_url("https://github.com/trending?since=daily")
+
+
+def test_resolve_source_url_key_does_not_fallback_to_first_for_unresolved_multi_entry_source():
+    source = SourceConfig(
+        name="gh_multi",
+        type="github_trending",
+        entry_urls=[
+            "https://github.com/trending?since=weekly",
+            "https://github.com/trending?since=daily",
+        ],
+    )
+    entry = Entry(
+        url="https://github.com/owner/repo",
+        source_name="github_trending",
+        metadata={},
+    )
+
+    resolved = _resolve_source_url_key_for_entry(source=source, entry=entry)
+
+    assert resolved == ""
+
+
+def test_unseen_cache_item_gets_priority_boost(tmp_path):
+    catalog = CatalogSQLite(tmp_path / "catalog.db")
+
+    assert _promote_unseen_cache_item_for_digest(catalog=catalog, item_id="owner/repo", status="reused") is True
+    catalog.mark_digested_items(
+        run_id="20260224_2032",
+        item_ids=["owner/repo"],
+        digested_at="2026-02-24T20:32:33+08:00",
+    )
+    assert _promote_unseen_cache_item_for_digest(catalog=catalog, item_id="owner/repo", status="reused") is False
+    assert _promote_unseen_cache_item_for_digest(catalog=catalog, item_id="owner/repo", status="unchanged") is False
+    assert _promote_unseen_cache_item_for_digest(catalog=catalog, item_id="owner/repo", status="new") is False
+
+    catalog.close()

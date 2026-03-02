@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import hashlib
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 import feedparser
@@ -20,8 +20,9 @@ class RSSAtomPlugin(SourcePlugin):
     capabilities = PluginCapabilities(supports_discover=True, supports_transcribe=False, requires_auth=False)
 
     def discover(self, source_config: "SourceConfig", client: httpx.Client, request_timeout_sec: int) -> list[Entry]:
-        entries: list[Entry] = []
+        ranked_entries: list[tuple[Entry, datetime | None, int]] = []
         errors: list[str] = []
+        discover_index = 0
         for feed_url in source_config.entry_urls:
             try:
                 response = client.get(feed_url, timeout=request_timeout_sec)
@@ -35,26 +36,28 @@ class RSSAtomPlugin(SourcePlugin):
                 link = feed_entry.get("link")
                 if not link:
                     continue
-                entries.append(
-                    Entry(
-                        url=link,
-                        source_name=self.source_name,
-                        metadata={
-                            "feed_url": feed_url,
-                            "feed_entry": _to_plain_dict(feed_entry),
-                            "status_code": response.status_code,
-                            "headers": dict(response.headers),
-                        },
-                    )
+                entry = Entry(
+                    url=link,
+                    source_name=self.source_name,
+                    metadata={
+                        "feed_url": feed_url,
+                        "feed_entry": _to_plain_dict(feed_entry),
+                        "status_code": response.status_code,
+                        "headers": dict(response.headers),
+                    },
                 )
+                published_at = _parse_feed_entry_datetime(feed_entry)
+                ranked_entries.append((entry, published_at, discover_index))
+                discover_index += 1
 
-        if entries:
-            return entries
+        if ranked_entries:
+            ranked_entries.sort(key=lambda row: _entry_sort_key(row[1], row[2]), reverse=True)
+            return [entry for entry, _, _ in ranked_entries]
 
         if errors:
             raise RuntimeError("all RSS feeds failed: " + " | ".join(errors))
 
-        return entries
+        return []
 
     def fetch(self, entry: Entry, client: httpx.Client, request_timeout_sec: int) -> RawPayload:
         if "feed_entry" in entry.metadata:
@@ -139,6 +142,48 @@ def _parse_datetime(value: Any) -> datetime | None:
         return dt_parser.parse(str(value))
     except Exception:
         return None
+
+
+def _parse_feed_entry_datetime(feed_entry: Any) -> datetime | None:
+    for key in ("published_parsed", "updated_parsed", "created_parsed"):
+        parsed = _parse_struct_datetime(feed_entry.get(key))
+        if parsed is not None:
+            return parsed
+    for key in ("published", "updated", "created", "dc:date"):
+        parsed = _parse_datetime(feed_entry.get(key))
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _parse_struct_datetime(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    try:
+        parts = tuple(value)
+        if len(parts) < 6:
+            return None
+        return datetime(
+            int(parts[0]),
+            int(parts[1]),
+            int(parts[2]),
+            int(parts[3]),
+            int(parts[4]),
+            int(parts[5]),
+            tzinfo=timezone.utc,
+        )
+    except Exception:
+        return None
+
+
+def _entry_sort_key(published_at: datetime | None, discover_index: int) -> tuple[int, float, int]:
+    if published_at is None:
+        return (0, 0.0, -discover_index)
+    if published_at.tzinfo is None:
+        normalized = published_at.replace(tzinfo=timezone.utc)
+    else:
+        normalized = published_at.astimezone(timezone.utc)
+    return (1, normalized.timestamp(), -discover_index)
 
 
 def _to_plain_dict(value: Any) -> dict[str, Any]:

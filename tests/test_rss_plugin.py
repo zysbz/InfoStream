@@ -64,3 +64,43 @@ def test_rss_discover_all_failed_raises_runtime_error():
     with pytest.raises(RuntimeError):
         plugin.discover(source, client, 20)
     client.close()
+
+
+def test_rss_discover_prioritizes_latest_entries():
+    feed_url = "https://example.com/sorted.xml"
+    feed_xml = """<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Test Feed</title>
+    <item>
+      <title>Older</title>
+      <link>https://example.com/older</link>
+      <pubDate>Tue, 20 Feb 2026 10:00:00 GMT</pubDate>
+    </item>
+    <item>
+      <title>Latest</title>
+      <link>https://example.com/latest</link>
+      <pubDate>Tue, 24 Feb 2026 10:00:00 GMT</pubDate>
+    </item>
+  </channel>
+</rss>
+"""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, request=request, text=feed_xml)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    plugin = RSSAtomPlugin()
+    source = SourceConfig(
+        name="rss_sorted",
+        type="rss_atom",
+        enabled=True,
+        entry_urls=[feed_url],
+    )
+
+    entries = plugin.discover(source, client, 20)
+    client.close()
+
+    assert len(entries) == 2
+    assert entries[0].url == "https://example.com/latest"
+    assert entries[1].url == "https://example.com/older"
