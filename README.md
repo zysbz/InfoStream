@@ -4,6 +4,10 @@
 
 InfoStream 是一个可扩展的信息源采集与每日摘要流水线。它从多个来源抓取更新，统一结构、去重并沉淀可追溯产物，最终输出人读和机读两种摘要结果。
 
+## 在线预览
+
+- https://zysbz.github.io/InfoStream/
+
 ## 界面预览
 
 ![InfoStream 网页预览](docs/assets/infostream-web-preview.png)
@@ -296,7 +300,8 @@ uv run pytest -q --basetemp=./tmp_pytest
 说明：
 
 - 工作流支持手动触发（`workflow_dispatch`）和每日定时触发。
-- 当前 cron 是 `30 0 * * *`（UTC 每天 00:30）；如果你希望按本地时区运行，可直接修改该字段。
+- 当前 cron 是 `0 0 * * *`（UTC 每天 00:00，对应北京时间每天 08:00）；如果你希望按其他本地时区运行，可直接修改该字段。
+- GitHub Actions 定时任务可能有几分钟到十几分钟延迟，实际开始时间不一定严格等于 `08:00`。
 - 部署时会把 `output/latest.html` 同步为 Pages 的 `index.html`（同时保留 `latest.html`）。
 
 ## Privacy and Security

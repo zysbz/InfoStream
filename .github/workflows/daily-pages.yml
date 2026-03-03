@@ -3,7 +3,7 @@ name: Daily Pages Digest
 on:
   workflow_dispatch:
   schedule:
-    - cron: "30 0 * * *"
+    - cron: "0 0 * * *"
 
 permissions:
   contents: read

@@ -4,6 +4,10 @@ English | [简体中文](README.md)
 
 InfoStream is an extensible source-ingestion and daily-digest pipeline. It collects updates from multiple sources, normalizes and deduplicates content, stores reproducible run artifacts, and produces both human-readable and machine-readable digests.
 
+## Live Preview
+
+- https://zysbz.github.io/InfoStream/
+
 ## Preview
 
 ![InfoStream web preview](docs/assets/infostream-web-preview.png)
@@ -296,7 +300,8 @@ One-time setup:
 Notes:
 
 - The workflow supports both manual trigger (`workflow_dispatch`) and daily schedule.
-- Current cron is `30 0 * * *` (00:30 UTC daily). Adjust it if you want a different local time.
+- Current cron is `0 0 * * *` (00:00 UTC daily, which is 08:00 in Asia/Shanghai).
+- GitHub Actions scheduled runs can be delayed by a few to 10+ minutes, so start time may not be exactly `08:00`.
 - During deployment, `output/latest.html` is copied to Pages `index.html` (and `latest.html` is also kept).
 
 ## Privacy and Security
