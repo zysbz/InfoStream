@@ -21,7 +21,7 @@
     "https://blogs.microsoft.com/ai/feed/": 10
   },
   "github_trending_total_limit": 21,
-  "llm_model": "qwen3.5-397b-a17b",
+  "llm_model": "deepseek-v3.2",
   "timezone": "UTC+08:00",
   "reuse_same_day": true,
   "backfill_from_same_day_cache": true,
